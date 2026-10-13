@@ -9,6 +9,7 @@ export const NAV: { screen: Screen; icon: string; label: string; mobile?: boolea
   { screen: 'drills', icon: '🧪', label: 'Drills' },
   { screen: 'blitz', icon: '⚡', label: 'Blitz', mobile: true },
   { screen: 'woodpecker', icon: '🐦', label: 'Woodpecker' },
+  { screen: 'sketch', icon: '✏️', label: 'Sketch' },
   { screen: 'garden', icon: '🌱', label: 'Garden', mobile: true },
   { screen: 'progress', icon: '📈', label: 'Progress', mobile: true },
   { screen: 'trophies', icon: '🏆', label: 'Trophies' },
@@ -34,7 +35,7 @@ export function TopBar() {
         </button>
         <nav className="nav">
           {NAV.map((n) => (
-            <button key={n.screen} className={screen === n.screen ? 'active' : ''} onClick={() => go(n.screen, n.screen === 'train' ? { kind: 'regular' } : undefined)}>
+            <button key={n.screen} className={screen === n.screen ? 'active' : ''} onClick={() => go(n.screen, n.screen === 'train' ? { kind: 'regular' } : n.screen === 'sketch' ? { kind: 'sketch' } : undefined)}>
               <span>{n.icon}</span>
               <span className="lbl">{n.label}</span>
             </button>
@@ -82,7 +83,7 @@ export function TopBar() {
               role="menuitem"
               onClick={() => {
                 setMore(false);
-                go(m.screen);
+                go(m.screen, m.screen === 'sketch' ? { kind: 'sketch' } : undefined);
               }}
             >
               <span>{m.icon}</span>

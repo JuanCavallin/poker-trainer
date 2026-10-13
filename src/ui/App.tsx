@@ -11,6 +11,7 @@ import { Learn } from './screens/Learn';
 import { Progress } from './screens/Progress';
 import { Settings } from './screens/Settings';
 import { Shop } from './screens/Shop';
+import { Sketch } from './screens/Sketch';
 import { Trainer } from './screens/Trainer';
 import { Trophies } from './screens/Trophies';
 import { Woodpecker } from './screens/Woodpecker';
@@ -54,6 +55,7 @@ export function App() {
         {screen === 'drills' && <Drills />}
         {screen === 'blitz' && <Blitz key={key} />}
         {screen === 'woodpecker' && <Woodpecker />}
+        {screen === 'sketch' && <Sketch key={key} session={session.kind === 'sketch' ? session : { kind: 'sketch' }} />}
         {screen === 'garden' && <Garden />}
         {screen === 'progress' && <Progress />}
         {screen === 'trophies' && <Trophies />}
