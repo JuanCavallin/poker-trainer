@@ -1,4 +1,4 @@
-import { rankOf, suitOf } from './cards';
+import { cardPretty, rankOf, suitOf } from './cards';
 import { NUM_CLASSES, NUM_COMBOS, classCombos, comboC1, comboC2, comboId } from './combos';
 import { evaluateWith } from './evaluator';
 import { describeHand } from './handinfo';
@@ -53,11 +53,8 @@ const BLINDS = 1.5;
 
 // ------------------------------------------------------------------ betting trees and solve settings
 
-/** The street being trained (and earlier streets when simulating the line): two sizes, one raise. */
+/** Two sizes and one raise: the decision street, the one card after it, and earlier streets when simulating the line. */
 const RICH: StreetConfig = { oopBets: [0.33, 0.75], ipBets: [0.33, 0.75], raiseMult: 3, maxRaises: 1, allinFrac: 0.7, allowAllin: true, allinMaxSpr: 2 };
-/** Streets after the decision street: one size, no raises (all-in only when short). */
-const LEAN_TURN: StreetConfig = { oopBets: [0.66], ipBets: [0.66], raiseMult: 3, maxRaises: 0, allinFrac: 0.7, allowAllin: true, allinMaxSpr: 1.5 };
-const LEAN_RIVER: StreetConfig = { oopBets: [0.75], ipBets: [0.75], raiseMult: 3, maxRaises: 0, allinFrac: 0.7, allowAllin: true, allinMaxSpr: 1.5 };
 /** Extra pot share for the player in position, per street not played out (equity realisation). */
 const EDGE = 0.03;
 
@@ -172,6 +169,7 @@ function permuteRange(w: Float32Array, perm: number[]): Float32Array {
 
 function applySuitPerm(spot: SpotPackage, perm: number[]): void {
   spot.board = spot.board.map((c) => permuteCard(c, perm));
+  if (spot.nextCard != null) spot.nextCard = permuteCard(spot.nextCard, perm);
   spot.history = spot.history.map((h) => ({ ...h, cards: h.cards.map((c) => permuteCard(c, perm)) }));
   spot.line = spot.line.map((s) => ({ ...s, board: s.board.map((c) => permuteCard(c, perm)), range: permuteRange(s.range, perm) }));
   for (const view of [spot.hero, spot.villain]) {
@@ -986,13 +984,11 @@ function foldShareOf(s: Float64Array): number {
 
 // ------------------------------------------------------------------ postflop spots
 
-function decisionGame(street: 'flop' | 'turn' | 'river', board: number[], ranges: [Float32Array, Float32Array], pot: number, stack: number, seed: number): { game: PostflopGame; solver: Solver; model: string } {
-  const probe = (minW: number) => {
-    let n = 0;
-    for (const r of ranges) for (let i = 0; i < NUM_COMBOS; i++) if (r[i] > minW) n++;
-    return n;
-  };
-  const width = probe(0.004);
+/**
+ * Solves the decision street. Flop and turn spots assume one next card (`nextCard`): the next street is
+ * played out with full betting on that card only, and hands holding it are left out of the solve.
+ */
+function decisionGame(street: 'flop' | 'turn' | 'river', board: number[], ranges: [Float32Array, Float32Array], pot: number, stack: number, seed: number, nextCard?: number): { game: PostflopGame; solver: Solver; model: string } {
   let game: PostflopGame;
   let model: string;
   let iters: { maxIter: number; targetPct: number; checkEvery: number };
@@ -1001,14 +997,12 @@ function decisionGame(street: 'flop' | 'turn' | 'river', board: number[], ranges
     model = 'River solved exactly for this betting tree (bets of 33%, 75% or all-in, one raise).';
     iters = { maxIter: 1200, targetPct: 0.12, checkEvery: 50 };
   } else if (street === 'turn') {
-    const dealRiver = width <= 300 ? 0 : width <= 600 ? 24 : width <= 1000 ? 16 : 12;
-    game = new PostflopGame({ board, pot, stack, ranges, streets: { 2: RICH, 3: LEAN_RIVER }, lastStreet: 3, dealRiver, seed });
-    model = `Turn solved with river play on ${dealRiver ? `${dealRiver} sampled` : 'every'} river card${dealRiver ? 's' : ''} (turn: 33%/75% bets and a raise; river: 75% bets).`;
-    iters = { maxIter: 250, targetPct: 0.35, checkEvery: 20 };
+    game = new PostflopGame({ board, pot, stack, ranges, streets: { 2: RICH, 3: DEFAULT_TREE }, lastStreet: 3, fixedCard: nextCard, seed });
+    model = `Turn solved assuming the river is the ${cardPretty(nextCard!)}, with full river play on it (turn and river: 33%/75% bets and a raise). Hands holding the ${cardPretty(nextCard!)} are left out. Pick another river card to re-solve.`;
+    iters = { maxIter: 300, targetPct: 0.3, checkEvery: 25 };
   } else {
-    const dealTurn = width <= 700 ? 7 : width <= 1100 ? 6 : 5;
-    game = new PostflopGame({ board, pot, stack, ranges, streets: { 1: RICH, 2: LEAN_TURN }, lastStreet: 2, dealTurn, leafRivers: 5, edge: EDGE, seed });
-    model = `Flop solved with turn play on ${dealTurn} sampled turn cards (flop: 33%/75% bets and a raise; turn: 66% bets); the river is a showdown over sampled cards with a small edge for position.`;
+    game = new PostflopGame({ board, pot, stack, ranges, streets: { 1: RICH, 2: RICH }, lastStreet: 2, fixedCard: nextCard, leafRivers: 8, edge: EDGE, seed });
+    model = `Flop solved assuming the turn is the ${cardPretty(nextCard!)}, with full turn play on it (33%/75% bets and a raise); the river is a showdown over sampled cards with a small edge for position. Hands holding the ${cardPretty(nextCard!)} are left out. Pick another turn card to re-solve.`;
     iters = { maxIter: 200, targetPct: 0.5, checkEvery: 25 };
   }
   const solver = new Solver(game);
@@ -1028,8 +1022,18 @@ function tryPostflop(req: SpotRequest, rng: Rng, attempt: number, street: 'flop'
   const hero = (seats.hero === m.oop ? 0 : 1) as 0 | 1;
   const vill = (1 - hero) as 0 | 1;
   const positions: [string, string] = [m.oop, m.ip];
-  const lineSeed = req.lineSeed != null && attempt === 0 ? req.lineSeed : rng.int(2 ** 31);
+  const keep = !!req.keepLine;
+  const lineSeed = req.lineSeed != null && (attempt === 0 || keep) ? req.lineSeed : rng.int(2 ** 31);
   const lineRng = new Rng(lineSeed);
+  // The one card the decision solve assumes comes next (flop: the turn, turn: the river).
+  let nextCard: number | undefined;
+  if (street !== 'river') {
+    const ok = (c: number | undefined): c is number => c != null && c >= 0 && c < 52 && !board.includes(c);
+    if (ok(req.nextCard)) nextCard = req.nextCard;
+    else
+      do nextCard = rng.int(52);
+      while (!ok(nextCard));
+  }
 
   // Preflop: ranges from the heads-up preflop equilibrium, with the villain's tendencies.
   const pre = playPreflop(m, seats.potType, heroPre, profile);
@@ -1061,7 +1065,7 @@ function tryPostflop(req: SpotRequest, rng: Rng, attempt: number, street: 'flop'
   }
   if (stack < 1) return null;
 
-  const { game, solver, model } = decisionGame(street, board, ranges, pot, stack, lineSeed ^ 0x2b3c);
+  const { game, solver, model } = decisionGame(street, board, ranges, pot, stack, lineSeed ^ 0x2b3c, nextCard);
   if (game.n[0] < 4 || game.n[1] < 4) return null;
   const eqStrat = solver.avgStrategy;
   const strat = postflopStrategy(game, solver, vill, profile);
@@ -1074,18 +1078,21 @@ function tryPostflop(req: SpotRequest, rng: Rng, attempt: number, street: 'flop'
   let villainNodeId = -1;
   let villainActionIdx = -1;
   const rootReach = game.reach;
+  // A re-solve of the same spot accepts whatever the new solve does; fresh spots skip rare lines.
+  const minCheck = keep ? 0 : 0.12;
+  const minBet = keep ? 1e-4 : 0.05;
   if (nodeType === 'oop-first') heroNode = 0;
   else if (nodeType === 'ip-vs-check') {
-    if (freqAt(strat, root, rootReach[0], 0) < 0.12) return null;
+    if (freqAt(strat, root, rootReach[0], 0) <= minCheck) return null;
     heroNode = root.children[0];
     villainNodeId = 0;
     villainActionIdx = 0;
   } else {
     const at = nodeType === 'ip-vs-bet' ? 0 : root.children[0];
-    if (nodeType === 'oop-vs-bet' && freqAt(eqStrat, root, rootReach[0], 0) < 0.15) return null;
+    if (nodeType === 'oop-vs-bet' && freqAt(eqStrat, root, rootReach[0], 0) <= (keep ? 0 : 0.15)) return null;
     const node = nodes[at];
     const rv = solver.reachAt(at, strat)[vill];
-    const cands = node.actions.map((a, k) => ({ k, f: a.kind === 'check' ? 0 : freqAt(strat, node, rv, k) })).filter((c) => c.f >= 0.05);
+    const cands = node.actions.map((a, k) => ({ k, f: a.kind === 'check' ? 0 : freqAt(strat, node, rv, k) })).filter((c) => c.f >= minBet);
     if (!cands.length) return null;
     const vf = req.villainFrac;
     const pick =
@@ -1116,7 +1123,7 @@ function tryPostflop(req: SpotRequest, rng: Rng, attempt: number, street: 'flop'
   const p = packageDecision(d);
   if (!p) return null;
   // Skip spots where one action does everything.
-  if (p.freqs.filter((f) => f / p.wsum >= 0.04).length < 2 && attempt < 25) return null;
+  if (!keep && p.freqs.filter((f) => f / p.wsum >= 0.04).length < 2 && attempt < 25) return null;
 
   const node = nodes[heroNode];
   const potAtNode = pot + node.inv[0] + node.inv[1];
@@ -1180,12 +1187,13 @@ function tryPostflop(req: SpotRequest, rng: Rng, attempt: number, street: 'flop'
   const texture = classifyTexture(board);
   const potLabel: PotType = seats.potType;
   const spot: SpotPackage = {
-    id: `${req.seed.toString(36)}-${attempt}-${lineSeed.toString(36)}-${board.join('.')}-${seats.hero}${seats.villain}${seats.potType}${req.suitPerm ? '-' + req.suitPerm.join('') : ''}-${profile}`,
+    id: `${req.seed.toString(36)}-${attempt}-${lineSeed.toString(36)}-${board.join('.')}${nextCard != null ? `-n${nextCard}` : ''}-${seats.hero}${seats.villain}${seats.potType}${req.suitPerm ? '-' + req.suitPerm.join('') : ''}-${profile}`,
     request: req,
     lineSeed,
     street,
     scenario: { id: `${m.opener}-${m.responder}${seats.potType === '3BP' ? '-3bp' : ''}`, name: `${m.opener} vs ${m.responder}`, potType: potLabel, oopPos: m.oop, ipPos: m.ip },
     board,
+    nextCard,
     texture,
     history: historyFrom(steps, pre.lines, board, street, pots, decisionLines),
     line: steps,
@@ -1256,7 +1264,9 @@ export function streetOf(req: SpotRequest): Street {
 export function generateSpotWithContext(req: SpotRequest): { spot: SpotPackage; ctx: SpotContext } {
   const rng = new Rng(req.seed);
   const street = streetOf(req);
-  for (let attempt = 0; attempt < 40; attempt++) {
+  // A re-solve repeats the same line, so retrying can't help beyond a couple of attempts.
+  const attempts = req.keepLine ? 2 : 40;
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const res = street === 'preflop' ? tryPreflop(req, rng, attempt) : tryPostflop(req, rng, attempt, street);
     if (res) return res;
   }

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { cardStr } from './cards';
 import { NUM_COMBOS } from './combos';
 import { PROFILE_IDS } from './profiles';
+import { comboC1, comboC2 } from './combos';
+import { sameSpotRequest } from './requests';
 import { exploitabilityGapPct, generateSpot, generateSpotWithContext } from './spot';
 import { NODE_TYPES, PREFLOP_NODE_TYPES, type SpotPackage, type Street } from './types';
 
@@ -173,6 +175,43 @@ describe('spot generation', () => {
     while (used.has(river)) river++;
     const b = generateSpot({ seed: 32, street: 'river', nodeType: 'oop-first', heroPos: a.heroPos as never, villainPos: a.villainPos as never, potType: a.scenario.potType as 'SRP', board: [...a.board.slice(0, 4), river], lineSeed: a.lineSeed });
     expect(b.history.slice(0, 3)).toEqual(a.history.slice(0, 3));
+  });
+
+  it('solves flop and turn spots for one next card and re-solves for another', () => {
+    for (const street of ['flop', 'turn'] as const) {
+      const a = generateSpot({ seed: 404, street, nodeType: 'ip-vs-check' });
+      expect(a.nextCard).toBeDefined();
+      expect(a.board).not.toContain(a.nextCard);
+      const holds = (id: number, c: number) => comboC1[id] === c || comboC2[id] === c;
+      for (let k = 0; k < a.hero.n; k++) expect(holds(a.hero.combos[k], a.nextCard!)).toBe(false);
+      for (let k = 0; k < a.villain.n; k++) expect(holds(a.villain.combos[k], a.nextCard!)).toBe(false);
+      expect(a.solution.model).toContain('assuming');
+
+      let other = 0;
+      while (a.board.includes(other) || other === a.nextCard) other++;
+      const t0 = performance.now();
+      const b = generateSpot(sameSpotRequest(a, { nextCard: other }));
+      console.log(`${street} re-solve for a new ${street === 'flop' ? 'turn' : 'river'}: ${(performance.now() - t0).toFixed(0)}ms`);
+      expect(b.nextCard).toBe(other);
+      expect(b.id).not.toBe(a.id);
+      expect(b.board).toEqual(a.board);
+      expect([b.heroPos, b.villainPos, b.nodeType]).toEqual([a.heroPos, a.villainPos, a.nodeType]);
+      expect(b.history).toEqual(a.history);
+      // Same range at the decision, minus the hands holding either assumed card.
+      const set = (v: SpotPackage['hero'], skip: number[]) => new Set(Array.from(v.combos).filter((id) => !skip.some((c) => holds(id, c))));
+      expect(set(b.hero, [a.nextCard!, other])).toEqual(set(a.hero, [a.nextCard!, other]));
+      // A random next card is reproducible from the original request.
+      expect(generateSpot(a.request).nextCard).toBe(a.nextCard);
+    }
+  });
+
+  it('re-solves mirrored spots in their displayed suits', () => {
+    const a = generateSpot({ seed: 405, street: 'turn', nodeType: 'oop-first', suitPerm: [1, 2, 3, 0] });
+    let other = 0;
+    while (a.board.includes(other) || other === a.nextCard) other++;
+    const b = generateSpot(sameSpotRequest(a, { nextCard: other }));
+    expect(b.board).toEqual(a.board);
+    expect(b.nextCard).toBe(other);
   });
 
   it('respects texture filters on every street', () => {

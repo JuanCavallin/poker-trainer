@@ -64,6 +64,11 @@ export interface PostflopGameConfig {
   /** Cards dealt at chance nodes (0 = every card). */
   dealTurn?: number;
   dealRiver?: number;
+  /**
+   * The next street's card, decided in advance: it is the only card dealt there, and hands holding it
+   * are left out (no one can hold a card that is about to be dealt).
+   */
+  fixedCard?: number;
   /** Runouts used for showdowns before the river (all-ins and depth-limited ends). 0 = every card. */
   leafTurns?: number;
   leafRivers?: number;
@@ -138,7 +143,7 @@ export class PostflopGame implements Game {
     this.stack = cfg.stack;
     this.rng = new Rng(cfg.seed);
     const minW = cfg.minWeight ?? 0.004;
-    const dead = new Set(cfg.board);
+    const dead = new Set(cfg.fixedCard != null ? [...cfg.board, cfg.fixedCard] : cfg.board);
     const ids: [number[], number[]] = [[], []];
     for (const p of [0, 1] as const) {
       for (let i = 0; i < NUM_COMBOS; i++) {
@@ -183,6 +188,11 @@ export class PostflopGame implements Game {
 
   private deal(ctx: number, street: 2 | 3): { cards: number[]; weights: number[]; ctx: number[] } {
     const base = this.ctxCards[ctx];
+    const fixed = this.cfg.fixedCard;
+    if (fixed != null && !base.includes(fixed)) {
+      this.ctxCards.push([...base, fixed]);
+      return { cards: [fixed], weights: [1], ctx: [this.ctxCards.length - 1] };
+    }
     const unseen = this.unseen(base);
     const k = street === 2 ? (this.cfg.dealTurn ?? 0) : (this.cfg.dealRiver ?? 0);
     const cards = sampleCards(unseen, k, this.rng);

@@ -54,6 +54,10 @@ export interface SpotRequest {
   lineSeed?: number;
   /** Preferred villain bet size (fraction of pot) when villain bets into you. */
   villainFrac?: number;
+  /** Flop and turn spots: the next card the solve assumes (turn on the flop, river on the turn). Random when omitted. */
+  nextCard?: number;
+  /** Re-solve the exact same spot (same line and board), never re-rolling it; used when changing `nextCard`. */
+  keepLine?: boolean;
 }
 
 export interface ActionOption {
@@ -160,6 +164,8 @@ export interface SpotPackage {
   street: Street;
   scenario: { id: string; name: string; potType: PotType; oopPos: string; ipPos: string };
   board: number[];
+  /** Flop and turn spots: the next card the solve assumes; hands holding it are left out of this solve. */
+  nextCard?: number;
   texture: TextureInfo;
   history: HistoryStreet[];
   /** Every action before the decision, with the actor's range after it. */
