@@ -15,8 +15,9 @@ import { comboC1, comboC2 } from '../../engine/combos';
 import { PROFILE_IDS, PROFILES } from '../../engine/profiles';
 import { randomSeed } from '../../engine/rng';
 import { classifyTexture } from '../../engine/texture';
-import { NODE_TYPE_INFO, type SpotPackage, type SpotRequest } from '../../engine/types';
-import { familyLabel } from '../../learning/families';
+import type { Position } from '../../engine/seats';
+import { NODE_TYPE_INFO, STREET_LABEL, type SpotPackage, type SpotRequest, type Street } from '../../engine/types';
+import { familyLabel, focusStreets, seatPref } from '../../learning/families';
 import { levelFromXp } from '../../learning/progress';
 import { nextDrill, nextRegular, nextReview } from '../../learning/selector';
 import { achievementById } from '../../learning/achievements';
@@ -87,6 +88,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
   const [twin, setTwin] = useState<TwinContext | null>(null);
   const [kind, setKind] = useState<SessionKind>('regular');
   const [attemptMs, setAttemptMs] = useState(0);
+  const [pendingStreet, setPendingStreet] = useState<Street>('river');
   const [, setHistVersion] = useState(0);
 
   const undoStack = useRef<Float32Array[]>([]);
@@ -106,6 +108,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
   const plan = useCallback((): Planned | null => {
     const s = useStore.getState();
     const nowTs = Date.now();
+    const seats = seatPref(s.settings);
     if (session.kind === 'regular') {
       const pick = nextRegular({
         families: s.families,
@@ -115,13 +118,15 @@ export function Trainer({ session }: { session: SessionConfig }) {
         relearn: relearn.current,
         sessionIndex: sessionIdx.current,
         now: nowTs,
+        streets: focusStreets(s.settings.focus),
+        seats,
       });
       if (pick.relearnFamily) relearn.current = relearn.current.filter((r) => r.family !== pick.relearnFamily);
       return { req: pick.request, kind: pick.reason === 'due' ? 'review' : 'regular' };
     }
     if (session.kind === 'drill') return { req: nextDrill(session.filters, sessionIdx.current, lastReq.current), kind: 'drill' };
     if (session.kind === 'review') {
-      const req = nextReview(s.families, nowTs, lastFamily.current);
+      const req = nextReview(s.families, nowTs, lastFamily.current, seats);
       return req ? { req, kind: 'review' } : null;
     }
     if (session.kind === 'woodpecker') {
@@ -131,7 +136,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
       const i = cycle ? cycle.results.length : 0;
       if (!cycle || cycle.finishedAt || i >= set.spots.length) return null;
       const req = { ...set.spots[cycle.perm[i]] };
-      if (set.mode === 'mirror' && set.cycles.length > 1) {
+      if (set.mode === 'mirror' && set.cycles.length > 1 && req.street !== 'preflop') {
         const p = [0, 1, 2, 3];
         const r = (set.cycles.length * 7 + i) % 24;
         // Deterministic per-cycle suit shuffle so each cycle looks fresh but is strategically identical.
@@ -172,16 +177,8 @@ export function Trainer({ session }: { session: SessionConfig }) {
       lastReq.current = s.request;
       const fam = useStore.getState().families[s.family];
       const hintsOn = settingsHints(useStore.getState().settings.hints, fam?.mastery ?? 0, fam?.reps ?? 0);
-      if (hintsOn) {
-        const big = s.actions.findIndex((a) => a.aggressive);
-        setBubble(
-          facing
-            ? `Pot odds: you need ${pct(s.theory.requiredEquity)} to call. MDF ≈ ${pct(s.theory.mdf)}.`
-            : big >= 0 && s.theory.perAction[big]
-              ? `For a ${pct(s.actions[big].frac)} bet, ~${pct(s.theory.perAction[big]!.bluffShare)} bluffs keeps them guessing.`
-              : 'Take your time. The cocoa is warm ☕',
-        );
-      } else setBubble(Math.random() < 0.3 ? pickOne(['Take your time ☕', 'What does their range look like?', 'Think in ranges, not hands.']) : null);
+      if (hintsOn) setBubble(openingHint(s));
+      else setBubble(Math.random() < 0.3 ? pickOne(['Take your time ☕', 'What does their range look like?', 'Think in ranges, not hands.']) : null);
     },
     [],
   );
@@ -199,6 +196,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
       }
       item = { planned, promise: engine.generate(planned.req) };
     }
+    setPendingStreet(item.planned.req.street ?? 'river');
     try {
       const s = await item.promise;
       startSpot(s, item.planned.kind);
@@ -319,7 +317,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
       setPhase('reveal');
       setBubble(null);
       sfx.flip();
-      exploitPromise.current = spot.solution.mode === 'gto' ? engine.exploitability(spot, res).catch(() => null) : Promise.resolve(null);
+      exploitPromise.current = spot.solution.balance ? engine.exploitability(spot, res).catch(() => null) : Promise.resolve(null);
     },
     [spot, strategy, startTs],
   );
@@ -345,6 +343,9 @@ export function Trainer({ session }: { session: SessionConfig }) {
         profile: spot.profile,
         scenarioId: spot.scenario.id,
         potType: spot.scenario.potType,
+        street: spot.street,
+        heroPos: spot.heroPos,
+        villainPos: spot.villainPos,
         request: spot.request,
         score: sc.score,
         accuracy: sc.accuracy,
@@ -430,28 +431,41 @@ export function Trainer({ session }: { session: SessionConfig }) {
   );
 
   const playTwin = useCallback(
-    async (which: 'river' | 'villain') => {
+    async (which: 'card' | 'villain') => {
       if (!spot) return;
+      const base: SpotRequest = {
+        seed: randomSeed(),
+        street: spot.street,
+        nodeType: spot.nodeType,
+        profile: spot.profile,
+        heroPos: spot.heroPos as Position,
+        villainPos: spot.villainPos as Position,
+        potType: spot.scenario.potType === '3BP' ? '3BP' : 'SRP',
+        lineSeed: spot.lineSeed,
+        villainFrac: spot.villainAction.frac || undefined,
+      };
       let req: SpotRequest;
       let label: string;
-      if (which === 'river') {
+      if (which === 'card' && spot.board.length) {
+        const keep = spot.board.slice(0, -1);
         const used = new Set(spot.board);
-        let river = -1;
+        let card = -1;
         for (let tries = 0; tries < 60; tries++) {
           const c = Math.floor(Math.random() * 52);
           if (used.has(c)) continue;
-          river = c;
-          if (classifyTexture([...spot.board.slice(0, 4), c]).id !== spot.texture.id) break;
+          card = c;
+          if (classifyTexture([...keep, c]).id !== spot.texture.id) break;
         }
-        req = { seed: randomSeed(), scenarioId: spot.scenario.id, nodeType: spot.nodeType, profile: spot.profile, board: [...spot.board.slice(0, 4), river], lineSeed: spot.lineSeed, villainFrac: spot.villainAction.frac || undefined };
-        label = 'Same line, new river';
+        req = { ...base, board: [...keep, card] };
+        label = `Same line, new ${STREET_LABEL[spot.street].toLowerCase()} card`;
       } else {
         const options = PROFILE_IDS.filter((p) => p !== spot.profile);
         const prof = spot.profile === 'gto' ? options[1 + Math.floor(Math.random() * (options.length - 1))] : 'gto';
-        req = { seed: spot.request.seed, scenarioId: spot.scenario.id, nodeType: spot.nodeType, profile: prof, board: spot.board, lineSeed: spot.lineSeed, villainFrac: spot.villainAction.frac || undefined };
+        req = { ...base, seed: spot.request.seed, profile: prof, board: spot.board.length ? spot.board : undefined };
         label = `Same spot vs ${PROFILES[prof].name}`;
       }
       const prev = spot;
+      setPendingStreet(spot.street);
       setPhase('loading');
       try {
         const s = await engine.generate(req);
@@ -547,6 +561,9 @@ export function Trainer({ session }: { session: SessionConfig }) {
         {spot && phase !== 'loading' && (
           <>
             <span className="tag honey">{familyLabel(spot.family).full}</span>
+            <span className="tag">
+              You {spot.heroPos} vs {spot.villainPos}
+            </span>
             {kind === 'review' && <span className="tag sky">💧 review</span>}
             {kind === 'twin' && <span className="tag sky">👯 twin</span>}
             {session.kind === 'woodpecker' && wood && (
@@ -557,7 +574,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
           </>
         )}
         <div className="spacer" />
-        {phase === 'build' && <span className="muted small num">⏱ {formatMs(now - startTs)}</span>}
+        {phase === 'build' && <span className="muted small num">⏱ {formatMs(Math.max(0, now - startTs))}</span>}
         {phase === 'build' && session.kind !== 'woodpecker' && (
           <button className="btn ghost small" onClick={() => void loadNext()} title="Skip this spot (no penalty)">
             Skip ↷
@@ -576,8 +593,10 @@ export function Trainer({ session }: { session: SessionConfig }) {
               <CardBack size={52} />
               <CardBack size={52} />
             </div>
-            <h3>Shuffling and solving the river…</h3>
-            <p className="muted small">The solver runs right here in your browser.</p>
+            <h3>{LOADING_TEXT[pendingStreet]}</h3>
+            <p className="muted small">
+              {pendingStreet === 'preflop' ? 'Preflop answers come from a solved preflop model.' : 'The solver runs right here in your browser. Earlier streets are solved too, so the ranges are real.'}
+            </p>
           </div>
         </div>
       )}
@@ -725,6 +744,26 @@ export function Trainer({ session }: { session: SessionConfig }) {
       )}
     </div>
   );
+}
+
+const LOADING_TEXT: Record<Street, string> = {
+  preflop: 'Shuffling up a preflop spot…',
+  flop: 'Dealing the flop and solving it (a few seconds)…',
+  turn: 'Playing the flop, then solving the turn…',
+  river: 'Playing the flop and turn, then solving the river…',
+};
+
+/** The companion's first hint for a spot, matched to the street. */
+function openingHint(s: SpotPackage): string {
+  const facing = s.toCall > 0;
+  if (s.street === 'preflop') {
+    if (s.nodeType === 'rfi') return 'Everyone behind you can still wake up with a hand. Fewer players behind → open wider.';
+    return `You need ${pct(s.theory.requiredEquity)} equity to call, but preflop, position and playability matter as much as raw equity.`;
+  }
+  if (facing) return `Pot odds: you need ${pct(s.theory.requiredEquity)} to call. MDF ≈ ${pct(s.theory.mdf)}.${s.street !== 'river' ? ' Draws still have outs.' : ''}`;
+  const big = s.actions.findIndex((a) => a.aggressive);
+  if (s.street !== 'river') return 'Before the river, bluffs are semi-bluffs: prefer hands with outs to hands with no equity.';
+  return big >= 0 && s.theory.perAction[big] ? `For a ${pct(s.actions[big].frac)} bet, ~${pct(s.theory.perAction[big]!.bluffShare)} bluffs keeps them guessing.` : 'Take your time. The cocoa is warm ☕';
 }
 
 export function settingsHints(mode: 'auto' | 'on' | 'off', mastery: number, reps: number): boolean {

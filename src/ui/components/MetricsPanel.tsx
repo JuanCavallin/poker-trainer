@@ -25,9 +25,13 @@ function Verdict({ tone, children }: { tone: 'ok' | 'warn' | 'bad'; children: Re
   return <span className={`verdict ${tone}`}>{children}</span>;
 }
 
-function BluffMeter({ spot, m, showTheory }: { spot: SpotPackage; m: ActionMetric; showTheory: boolean }) {
+function BluffMeter({ spot, m, showTheory: hints }: { spot: SpotPackage; m: ActionMetric; showTheory: boolean }) {
   const opt = spot.actions[m.index];
   const th = spot.theory.perAction[m.index];
+  // The s/(1+2s) bluff ratio is a river idea: earlier, "bluffs" are semi-bluffs that still have outs.
+  const river = spot.street === 'river';
+  const showTheory = hints && river;
+  const weak = river ? 'bluffs' : spot.street === 'preflop' ? 'light' : 'semi-bluffs/air';
   const color = actionColors(spot)[m.index];
   if (m.combos < 0.3) {
     return (
@@ -38,6 +42,7 @@ function BluffMeter({ spot, m, showTheory }: { spot: SpotPackage; m: ActionMetri
           <span className="val muted">unused</span>
         </div>
         {showTheory && th && <div className="sub">If you use it: ~{pct(th.bluffShare)} bluffs keeps villain indifferent · they must defend {pct(th.villainMdf)}</div>}
+        {hints && !river && th && <div className="sub">Villain must defend {pct(th.villainMdf)} vs this size.</div>}
       </div>
     );
   }
@@ -49,12 +54,14 @@ function BluffMeter({ spot, m, showTheory }: { spot: SpotPackage; m: ActionMetri
         <span style={{ width: 10, height: 10, borderRadius: 3, background: color, display: 'inline-block' }} />
         {opt.short}
         <span className="muted small">{pct(m.freq)} of range</span>
-        <span className="val">{pct(m.bluffShare)} bluffs</span>
+        <span className="val">
+          {pct(m.bluffShare)} {weak}
+        </span>
       </div>
       <Gauge value={m.bluffShare} color="var(--berry)" marks={showTheory && th ? [{ at: th.bluffShare, label: `theory ${pct(th.bluffShare)}` }] : []} />
       <div className="sub">
-        <b className="num">{m.valueCombos.toFixed(1)}</b> value · <b className="num">{m.bluffCombos.toFixed(1)}</b> bluff combos
-        {Number.isFinite(perTen) && <> — {perTen.toFixed(1)} bluffs per 10 value hands</>}
+        <b className="num">{m.valueCombos.toFixed(1)}</b> ahead of their calls · <b className="num">{m.bluffCombos.toFixed(1)}</b> behind
+        {Number.isFinite(perTen) && river && <> — {perTen.toFixed(1)} bluffs per 10 value hands</>}
       </div>
       {showTheory && th && (
         <div className="row wrap" style={{ gap: 6 }}>
@@ -111,6 +118,11 @@ export function MetricsPanel({ spot, strategy, showTheory }: { spot: SpotPackage
 
       {m.facing && (
         <>
+          {spot.street === 'preflop' && showTheory && (
+            <div className="sub" style={{ marginBottom: 6 }}>
+              Preflop, MDF is only a rough guide: the other seats and how well each hand plays postflop matter too.
+            </div>
+          )}
           <div className="metric">
             <div className="head">
               🛡️ Defence
@@ -131,16 +143,23 @@ export function MetricsPanel({ spot, strategy, showTheory }: { spot: SpotPackage
           </div>
           <div className="metric">
             <div className="head">
-              🦊 Villain's bet
-              <span className="val">{pct(st.villainBluffShare)} bluffs</span>
+              🦊 Villain's {spot.street === 'preflop' ? 'raise' : 'bet'}
+              <span className="val">
+                {pct(st.villainBluffShare)} {spot.street === 'river' ? 'bluffs' : 'behind'}
+              </span>
             </div>
             <Gauge
               value={st.villainBluffShare}
               color="var(--b-air)"
-              marks={showTheory ? [{ at: th.villainBluffShare, label: `balanced ≈${pct(th.villainBluffShare)}` }] : []}
+              marks={showTheory && spot.street === 'river' ? [{ at: th.villainBluffShare, label: `balanced ≈${pct(th.villainBluffShare)}` }] : []}
             />
-            <div className="sub">Share of their betting range that loses to most of your range. A {pct(th.villainBetFrac)}-pot bet is balanced near {pct(th.villainBluffShare)} bluffs.</div>
+            <div className="sub">
+              {spot.street === 'river'
+                ? `Share of their betting range that loses to most of your range. A ${pct(th.villainBetFrac)}-pot bet is balanced near ${pct(th.villainBluffShare)} bluffs.`
+                : 'Share of their range that is behind your average hand right now. Before the river many of these still have outs, so expect more of them than on the river.'}
+            </div>
             {showTheory &&
+              spot.street === 'river' &&
               (st.villainBluffShare > th.villainBluffShare + 0.08 ? (
                 <Verdict tone="warn">🎯 Looks over-bluffed: bluff-catchers gain value</Verdict>
               ) : st.villainBluffShare < th.villainBluffShare - 0.08 ? (
@@ -171,7 +190,7 @@ export function MetricsPanel({ spot, strategy, showTheory }: { spot: SpotPackage
           <div style={{ flex: 1, background: 'var(--b-air)' }} />
         </div>
         <div className="sub" style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-          <span>Nut hands (top 10% on board)</span>
+          <span>{spot.street === 'preflop' ? 'Premium hands (top 10%)' : 'Nut hands (top 10% made hands)'}</span>
           <span>
             You <b>{pct(st.heroNutShare)}</b> · Villain <b>{pct(st.villainNutShare)}</b>
           </span>
@@ -191,7 +210,7 @@ export function MetricsPanel({ spot, strategy, showTheory }: { spot: SpotPackage
         )}
       </div>
 
-      {spot.nodeType === 'oop-first' && Number.isFinite(m.checkStrongShare) && (
+      {spot.nodeType === 'oop-first' && spot.street !== 'preflop' && Number.isFinite(m.checkStrongShare) && (
         <div className="metric">
           <div className="head">
             🧺 Checking-range protection

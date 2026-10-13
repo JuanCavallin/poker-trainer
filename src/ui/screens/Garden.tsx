@@ -1,6 +1,8 @@
-import { TEXTURES, TEXTURE_IDS } from '../../engine/texture';
-import { NODE_TYPES, NODE_TYPE_INFO, familyKey } from '../../engine/types';
-import { familyUnlockLevel } from '../../learning/families';
+import { useState } from 'react';
+import { POSITION_NAMES, type Position } from '../../engine/seats';
+import { TEXTURES, type TextureId } from '../../engine/texture';
+import { NODE_TYPE_INFO, STREETS, STREET_LABEL, familyKey, nodeTypesFor, type PreflopNode, type Street } from '../../engine/types';
+import { PREFLOP_SEATS, columnLabel, columnsFor, familyHue, familyUnlockLevel } from '../../learning/families';
 import { DAY, STAGE_NAMES, plantStage, retrievability } from '../../learning/memory';
 import { levelFromXp } from '../../learning/progress';
 import { dueFamilies } from '../../learning/selector';
@@ -17,6 +19,8 @@ export function Garden() {
   const level = levelFromXp(xp).level;
   const now = Date.now();
   const due = dueFamilies(families, now);
+  const [street, setStreet] = useState<Street>('preflop');
+  const dueOn = (st: Street) => dueFamilies(families, now, [st]).length;
 
   return (
     <div className="col" style={{ gap: 18 }}>
@@ -42,15 +46,26 @@ export function Garden() {
         ))}
       </div>
 
-      {NODE_TYPES.map((n) => (
+      <div className="tabs">
+        {STREETS.map((st) => (
+          <button key={st} className={street === st ? 'on' : ''} onClick={() => setStreet(st)}>
+            {STREET_LABEL[st]}
+            {dueOn(st) > 0 && <span className="tag sky" style={{ marginLeft: 6 }}>💧 {dueOn(st)}</span>}
+          </button>
+        ))}
+      </div>
+
+      {nodeTypesFor(street).map((n) => (
         <div key={n} className="panel">
           <div className="panel-title">
             <h3>{NODE_TYPE_INFO[n].label}</h3>
             <span className="muted small">{NODE_TYPE_INFO[n].blurb}</span>
           </div>
           <div className="garden">
-            {TEXTURE_IDS.map((t) => {
-              const key = familyKey(n, t);
+            {columnsFor(street)
+              .filter((t) => street !== 'preflop' || PREFLOP_SEATS[n as PreflopNode].includes(t as Position))
+              .map((t) => {
+              const key = familyKey(street, n, t);
               const f = families[key];
               const need = familyUnlockLevel(key);
               const locked = !unlockAll && need > level;
@@ -66,14 +81,23 @@ export function Garden() {
                   onClick={() =>
                     go('train', {
                       kind: 'drill',
-                      title: `${NODE_TYPE_INFO[n].short} · ${TEXTURES[t].label}`,
-                      filters: { nodeTypes: [n], textures: [t], profiles: ['gto'], scenarios: [], order: 'mixed' },
+                      title: `${STREET_LABEL[street]} · ${NODE_TYPE_INFO[n].short} · ${columnLabel(street, t)}`,
+                      filters: {
+                        streets: [street],
+                        nodeTypes: [n],
+                        textures: street === 'preflop' ? [] : [t as TextureId],
+                        heroSeats: street === 'preflop' ? [t as Position] : [],
+                        villainSeats: [],
+                        potTypes: [],
+                        profiles: ['gto'],
+                        order: 'mixed',
+                      },
                     })
                   }
-                  title={TEXTURES[t].blurb}
+                  title={street === 'preflop' ? POSITION_NAMES[t as Position] : TEXTURES[t as TextureId].blurb}
                 >
-                  <Plant stage={locked ? 0 : stage} health={f?.reps ? r : 1} hue={TEXTURES[t].hue} />
-                  <span className="name">{TEXTURES[t].label}</span>
+                  <Plant stage={locked ? 0 : stage} health={f?.reps ? r : 1} hue={familyHue(key)} />
+                  <span className="name">{columnLabel(street, t)}</span>
                   {locked ? (
                     <span className="tiny muted">🔒 Level {need}</span>
                   ) : f?.reps ? (

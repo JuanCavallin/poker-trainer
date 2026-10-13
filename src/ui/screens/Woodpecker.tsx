@@ -1,27 +1,33 @@
 import { useState } from 'react';
-import { randomSeed } from '../../engine/rng';
-import { parseFamily, type SpotRequest } from '../../engine/types';
-import { familyLabel, unlockedFamilies } from '../../learning/families';
+import { STREET_LABEL, type SpotRequest, type Street } from '../../engine/types';
+import { familyLabel, requestFamily, unlockedFamilies, type SeatPref } from '../../learning/families';
 import { levelFromXp } from '../../learning/progress';
+import { requestForFamily } from '../../learning/selector';
 import { useStore } from '../../state/store';
 import type { WoodpeckerSet } from '../../state/types';
 import { LineChart } from '../components/Charts';
+import { SeatPicker, seatOrUndefined, type Seat } from '../components/SeatPicker';
 import { useNav } from '../nav';
 import { formatMs, timeAgo } from '../util';
 
 type Source = 'weak' | 'random' | 'facing' | 'betting';
+type SetStreet = Street | 'postflop';
 
-function buildSpots(size: number, source: Source): SpotRequest[] {
+const SET_STREETS: SetStreet[] = ['preflop', 'flop', 'turn', 'river', 'postflop'];
+const setStreetLabel = (s: SetStreet) => (s === 'postflop' ? 'Mixed postflop' : STREET_LABEL[s]);
+
+function buildSpots(size: number, source: Source, street: SetStreet, seats: SeatPref | undefined): SpotRequest[] {
   const s = useStore.getState();
-  let fams = unlockedFamilies(levelFromXp(s.xp).level, s.settings.unlockAll);
-  if (source === 'facing') fams = fams.filter((f) => f.includes('vs-bet'));
-  if (source === 'betting') fams = fams.filter((f) => !f.includes('vs-bet'));
+  const streets: Street[] = street === 'postflop' ? ['flop', 'turn', 'river'] : [street];
+  const level = levelFromXp(s.xp).level;
+  let fams = unlockedFamilies(level, s.settings.unlockAll, streets, seats);
+  const facing = (f: string) => /vs-bet|vs-open|vs-3bet|vs-4bet/.test(f);
+  if (source === 'facing') fams = fams.filter(facing);
+  if (source === 'betting') fams = fams.filter((f) => !facing(f));
   if (source === 'weak') fams = [...fams].sort((a, b) => (s.families[a]?.mastery ?? 0.4) - (s.families[b]?.mastery ?? 0.4)).slice(0, Math.max(3, Math.ceil(size / 3)));
-  if (!fams.length) fams = unlockedFamilies(1, false);
-  return Array.from({ length: size }, (_, i) => {
-    const { nodeType, texture } = parseFamily(fams[i % fams.length]);
-    return { seed: randomSeed(), nodeType, texture, profile: 'gto' };
-  });
+  if (!fams.length) fams = unlockedFamilies(level, true, streets, seats);
+  if (!fams.length) fams = unlockedFamilies(level, true, streets);
+  return Array.from({ length: size }, (_, i) => requestForFamily(fams[i % fams.length], 'gto', seats));
 }
 
 const shuffled = (n: number) => {
@@ -41,15 +47,25 @@ export function Woodpecker() {
   const remove = useStore((s) => s.deleteWoodpecker);
   const [size, setSize] = useState(12);
   const [source, setSource] = useState<Source>('weak');
-  const [mode, setMode] = useState<'mirror' | 'exact'>('mirror');
+  const [street, setStreet] = useState<SetStreet>('preflop');
+  const [mode, setMode] = useState<'mirror' | 'exact'>('exact');
+  const [hero, setHero] = useState<Seat>('any');
+  const [villain, setVillain] = useState<Seat>('any');
+
+  const pickStreet = (s: SetStreet) => {
+    setStreet(s);
+    setMode(s === 'preflop' ? 'exact' : 'mirror');
+  };
 
   const create = () => {
+    const seats = hero === 'any' && villain === 'any' ? undefined : { hero: seatOrUndefined(hero), villain: seatOrUndefined(villain) };
     const ws: WoodpeckerSet = {
       id: `wp-${Date.now().toString(36)}`,
-      name: `Set ${sets.length + 1}`,
+      name: `${setStreetLabel(street)} set ${sets.filter((w) => (w.street ?? 'river') === street).length + 1}`,
       createdAt: Date.now(),
       mode,
-      spots: buildSpots(size, source),
+      street,
+      spots: buildSpots(size, source, street, seats),
       cycles: [],
     };
     add(ws);
@@ -69,15 +85,25 @@ export function Woodpecker() {
         <span className="deco">🐦</span>
         <h1>Woodpecker cycles</h1>
         <p>
-          Chess players drill a fixed puzzle set over and over, each cycle faster (Smith &amp; Tikkanen's <i>Woodpecker Method</i>). Poker patterns are more abstract, so this version
-          keeps the repetition and speed targets but reshuffles suits every cycle: strategically the same spot, visually new. You end up recognising the structure instead of memorising a
-          picture.
+          Chess players drill a fixed puzzle set over and over, each cycle faster (Smith &amp; Tikkanen's <i>Woodpecker Method</i>). It fits <b>preflop</b> best: there are only 169 hands
+          and a handful of seats, and the same situation always has the same answer, which is exactly when repetition turns slow reasoning into instant recall. Postflop patterns are
+          more abstract, so postflop sets reshuffle suits every cycle: strategically the same spot, visually new.
         </p>
       </div>
 
       <div className="panel">
         <h2>🌰 New set</h2>
         <div className="row wrap" style={{ gap: 18, alignItems: 'flex-start' }}>
+          <div className="field">
+            <label>Street</label>
+            <div className="seg">
+              {SET_STREETS.map((s) => (
+                <button key={s} className={street === s ? 'on' : ''} onClick={() => pickStreet(s)}>
+                  {setStreetLabel(s)}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="field">
             <label>Size</label>
             <div className="seg">
@@ -108,15 +134,28 @@ export function Woodpecker() {
           <div className="field">
             <label>Repeats</label>
             <div className="seg">
-              <button className={mode === 'mirror' ? 'on' : ''} onClick={() => setMode('mirror')}>
-                🪞 Mirror (recommended)
+              <button className={mode === 'mirror' ? 'on' : ''} onClick={() => setMode('mirror')} disabled={street === 'preflop'}>
+                🪞 Mirror{street !== 'preflop' ? ' (recommended)' : ''}
               </button>
               <button className={mode === 'exact' ? 'on' : ''} onClick={() => setMode('exact')}>
-                📋 Exact
+                📋 Exact{street === 'preflop' ? ' (recommended)' : ''}
               </button>
             </div>
+            <span className="small muted" style={{ maxWidth: 360 }}>
+              {street === 'preflop'
+                ? 'Suits don’t change a preflop chart, so every repeat is the real thing. Identical, spaced repetition is how fixed facts become automatic.'
+                : 'Mirror keeps the strategy and changes the suits, so you learn the pattern rather than the picture.'}
+            </span>
           </div>
         </div>
+        <SeatPicker
+          hero={hero}
+          villain={villain}
+          onChange={(h, v) => {
+            setHero(h);
+            setVillain(v);
+          }}
+        />
         <button className="btn" onClick={create}>
           Create set
         </button>
@@ -132,12 +171,15 @@ export function Woodpecker() {
         const lastTime = lastDone ? lastDone.results.reduce((s, r) => s + r.ms, 0) : 0;
         const lastAvg = lastDone ? lastDone.results.reduce((s, r) => s + r.score, 0) / lastDone.results.length : 0;
         const rested = !lastDone?.finishedAt || Date.now() - lastDone.finishedAt > 20 * 3_600_000;
-        const fams = [...new Set(ws.spots.map((s) => `${s.nodeType}|${s.texture}`))];
+        const fams = [...new Set(ws.spots.map((s) => requestFamily(s)).filter((x): x is string => !!x))];
         return (
           <div key={ws.id} className="panel">
             <div className="panel-title">
               <h3>
-                🐦 {ws.name} <span className="muted small">· {ws.spots.length} spots · {ws.mode === 'mirror' ? 'mirror' : 'exact'} · created {timeAgo(ws.createdAt)}</span>
+                🐦 {ws.name}{' '}
+                <span className="muted small">
+                  · {setStreetLabel(ws.street ?? 'river')} · {ws.spots.length} spots · {ws.mode === 'mirror' ? 'mirror' : 'exact'} · created {timeAgo(ws.createdAt)}
+                </span>
               </h3>
               <div className="spacer" />
               <button className="btn ghost small" onClick={() => confirm('Delete this set?') && remove(ws.id)}>

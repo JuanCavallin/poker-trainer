@@ -1,7 +1,7 @@
 import { BUCKETS, bucketOf, spotStats } from '../../engine/analysis';
 import { PROFILES } from '../../engine/profiles';
 import { TEXTURES } from '../../engine/texture';
-import { NODE_TYPE_INFO, type SpotPackage } from '../../engine/types';
+import { NODE_TYPE_INFO, STREET_LABEL, type SpotPackage } from '../../engine/types';
 import { cosmeticById } from '../../state/cosmetics';
 import { useStore } from '../../state/store';
 import { bb, pct } from '../util';
@@ -31,13 +31,16 @@ export function TablePanel({ spot, bubble, heroCards }: { spot: SpotPackage; bub
             {spot.scenario.name} · {spot.scenario.potType}
           </span>
           <span className="spacer" />
-          <span>RIVER</span>
+          <span>{STREET_LABEL[spot.street].toUpperCase()}</span>
         </div>
         <div className="board">
           {spot.board.map((c, i) => (
             <div key={i} style={{ marginLeft: i === 3 || i === 4 ? 4 : 0 }}>
               <PlayingCard card={c} size={44} />
             </div>
+          ))}
+          {Array.from({ length: 5 - spot.board.length }, (_, i) => (
+            <div key={`e${i}`} className="pcard empty-slot" style={{ ['--w' as string]: '44px' }} />
           ))}
         </div>
         <div className="pot">
@@ -48,7 +51,7 @@ export function TablePanel({ spot, bubble, heroCards }: { spot: SpotPackage; bub
           <div className="seat">
             <span>{profile.emoji}</span>
             <span>
-              <b>{spot.villainPos}</b> · {bb(spot.stackStart - spot.villainInv, 0)}
+              <b>{spot.villainPos}</b> · {bb(spot.villainBehind, 0)}
             </span>
           </div>
           <div className="seat">
@@ -76,7 +79,7 @@ export function HistoryPanel({ spot }: { spot: SpotPackage }) {
       </div>
       <div className="history">
         {spot.history.map((h) => (
-          <div key={h.street} className={`street${h.street === 'River' ? ' river' : ''}`}>
+          <div key={h.street} className={`street${h.street.toLowerCase() === spot.street ? ' river' : ''}`}>
             <b>{h.street}</b>
             <span>
               {h.cards.length > 0 && (
@@ -85,14 +88,16 @@ export function HistoryPanel({ spot }: { spot: SpotPackage }) {
                 </>
               )}
               {h.street !== 'Preflop' && <span className="muted">({bb(h.pot)}) </span>}
-              {h.lines.join(' → ') || (h.street === 'River' ? 'Your move' : '')}
+              {h.lines.join(' → ') || (h.street.toLowerCase() === spot.street ? 'Your move' : '')}
+              {h.street.toLowerCase() === spot.street && h.lines.length > 0 && <span className="muted"> → your move</span>}
             </span>
           </div>
         ))}
       </div>
       <div className="row wrap" style={{ marginTop: 10, gap: 6 }}>
         <span className="tag honey">{NODE_TYPE_INFO[spot.nodeType].label}</span>
-        <span className="tag sage">{TEXTURES[spot.texture.id].label}</span>
+        {spot.street !== 'preflop' && <span className="tag sage">{TEXTURES[spot.texture.id].label}</span>}
+        <span className="tag">{spot.heroIp ? 'You are in position' : 'You are out of position'}</span>
         {spot.texture.tags.slice(0, 2).map((t) => (
           <span key={t} className="tag">
             {t}
@@ -151,7 +156,8 @@ export function VillainPanel({ spot, showGrid = true }: { spot: SpotPackage; sho
           ))}
         </div>
         <div className="tiny muted" style={{ marginTop: 4 }}>
-          Colours show each villain hand's equity against <i>your</i> range. Villain bluffs ≈ {pct(st.villainBluffShare)} of this range.
+          Colours show each villain hand's {spot.street === 'river' ? 'equity' : 'all-in equity'} against <i>your</i> range.{' '}
+          {spot.street === 'river' ? `Villain bluffs ≈ ${pct(st.villainBluffShare)} of this range.` : `${pct(st.villainBluffShare)} of this range is behind yours right now.`}
         </div>
       </div>
       {showGrid && (

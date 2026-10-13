@@ -2394,7 +2394,17 @@ textarea {
   }
 }
 
-@media (max-width: 1100px) {
+/* Eleven nav items: drop the wordmark first, then the labels, so the bar stays on one line. */
+@media (max-width: 1480px) {
+  .topbar .wordmark {
+    display: none;
+  }
+  .nav button {
+    padding: 7px 10px;
+  }
+}
+
+@media (max-width: 1220px) {
   .nav button span.lbl {
     display: none;
   }
@@ -2575,3 +2585,68 @@ textarea {
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
 }
+
+/* ============================================================ empty board slots */
+.pcard.empty-slot {
+  background: transparent;
+  border: 2px dashed rgba(255, 255, 255, 0.28);
+  box-shadow: none;
+}
+
+[data-theme='dark'] .pcard.empty-slot {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ============================================================ range sketch */
+.sketch {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .sketch {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.sketch-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sketch-step {
+  display: grid;
+  grid-template-columns: 10px 44px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.sketch-step:hover {
+  background: var(--panel-2);
+}
+
+.sketch-step.on {
+  background: var(--honey-l);
+  border-color: var(--line);
+  font-weight: 700;
+}
+
+.sketch-step .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+

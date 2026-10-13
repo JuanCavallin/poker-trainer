@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { FINDS, GRADE_INFO, spotStats, type FindId, type HandResult, type RangeScore, type Strategy } from '../../engine/analysis';
 import { cardPretty } from '../../engine/cards';
 import { PROFILES } from '../../engine/profiles';
-import type { SpotPackage } from '../../engine/types';
+import { STREET_LABEL, type SpotPackage } from '../../engine/types';
 import { achievementById } from '../../learning/achievements';
 import type { Outcome } from '../../state/store';
 import type { Confidence } from '../../state/types';
@@ -73,7 +73,7 @@ export function Feedback({
   twin?: TwinContext | null;
   onNext: () => void;
   nextLabel: string;
-  onTwin?: (kind: 'river' | 'villain') => void;
+  onTwin?: (kind: 'card' | 'villain') => void;
 }) {
   const [tab, setTab] = useState<'hand' | 'range' | 'insights'>('hand');
   const [gridView, setGridView] = useState<'side' | 'diff'>('side');
@@ -305,9 +305,9 @@ export function Feedback({
                   <th>Action</th>
                   <th>You</th>
                   <th>{refLabel}</th>
-                  <th>Your bluffs</th>
-                  <th>Ref bluffs</th>
-                  <th>Theory</th>
+                  <th>{spot.street === 'river' ? 'Your bluffs' : 'Your weak bets'}</th>
+                  <th>{spot.street === 'river' ? 'Ref bluffs' : 'Ref weak bets'}</th>
+                  <th>{spot.street === 'river' ? 'Theory' : 'MDF'}</th>
                 </tr>
               </thead>
               <tbody>
@@ -321,7 +321,7 @@ export function Feedback({
                     <td className="num">{pct(score.refFreq[i])}</td>
                     <td className="num">{a.aggressive ? pct(score.userBluff[i]) : ''}</td>
                     <td className="num">{a.aggressive ? pct(score.refBluff[i]) : ''}</td>
-                    <td className="num">{a.aggressive ? pct(spot.theory.perAction[i]?.bluffShare ?? NaN) : a.key === 'call' ? `MDF ${pct(spot.theory.mdf)}` : ''}</td>
+                    <td className="num">{a.aggressive && spot.street === 'river' ? pct(spot.theory.perAction[i]?.bluffShare ?? NaN) : a.key === 'call' ? `MDF ${pct(spot.theory.mdf)}` : ''}</td>
                   </tr>
                 ))}
               </tbody>
@@ -331,6 +331,13 @@ export function Feedback({
 
         {tab === 'insights' && (
           <div className="insights">
+            <div className="insight" style={{ background: 'var(--panel-2)' }}>
+              <span className="ic">🤖</span>
+              <span className="small">
+                <b>How this spot was solved:</b> {spot.solution.model}
+                {spot.street !== 'preflop' && spot.solution.solverExplPct > 0 && ` Solver precision: within ${spot.solution.solverExplPct.toFixed(2)}% of the pot of equilibrium.`}
+              </span>
+            </div>
             {insights.length === 0 && <div className="empty">Nothing to flag. Lovely.</div>}
             {insights.map((x, i) => (
               <div key={i} className="insight" style={x.tone === 'good' ? { background: 'var(--sage-l)' } : undefined}>
@@ -348,9 +355,11 @@ export function Feedback({
         </button>
         {onTwin && (
           <>
-            <button className="btn secondary" onClick={() => onTwin('river')} title="Same flop, turn and line; a different river card. Compare how the strategy shifts.">
-              👯 Twin: new river
-            </button>
+            {spot.board.length > 0 && (
+              <button className="btn secondary" onClick={() => onTwin('card')} title="Same earlier cards and line; a different last card. Compare how the strategy shifts.">
+                👯 Twin: new {STREET_LABEL[spot.street].toLowerCase()} card
+              </button>
+            )}
             <button className="btn secondary" onClick={() => onTwin('villain')} title="Same spot against a different villain personality.">
               🎭 Twin: new villain
             </button>
@@ -364,8 +373,9 @@ export function Feedback({
 function TwinCompare({ spot, twin }: { spot: SpotPackage; twin: TwinContext }) {
   const a = freqSummary(twin.spot, twin.spot.solution.strategy);
   const b = freqSummary(spot, spot.solution.strategy);
-  const riverA = twin.spot.board[4];
-  const riverB = spot.board[4];
+  const lastA = twin.spot.board[twin.spot.board.length - 1];
+  const lastB = spot.board[spot.board.length - 1];
+  const cardLabel = (c: number | undefined) => (c == null ? 'preflop' : `${STREET_LABEL[spot.street].toLowerCase()} ${cardPretty(c)}`);
   return (
     <div className="panel" style={{ background: 'var(--sky-l)' }}>
       <div className="panel-title">
@@ -375,13 +385,13 @@ function TwinCompare({ spot, twin }: { spot: SpotPackage; twin: TwinContext }) {
       <div className="col" style={{ gap: 8 }}>
         <div>
           <div className="small" style={{ fontWeight: 800 }}>
-            Before · river {cardPretty(riverA)} · {PROFILES[twin.spot.profile].emoji} {PROFILES[twin.spot.profile].name}
+            Before · {cardLabel(lastA)} · {PROFILES[twin.spot.profile].emoji} {PROFILES[twin.spot.profile].name}
           </div>
           <FreqLine items={a} />
         </div>
         <div>
           <div className="small" style={{ fontWeight: 800 }}>
-            Now · river {cardPretty(riverB)} · {PROFILES[spot.profile].emoji} {PROFILES[spot.profile].name}
+            Now · {cardLabel(lastB)} · {PROFILES[spot.profile].emoji} {PROFILES[spot.profile].name}
           </div>
           <FreqLine items={b} />
         </div>

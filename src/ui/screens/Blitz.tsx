@@ -2,17 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { BUCKETS, bucketOf, gradeHand, type HandResult } from '../../engine/analysis';
 import { comboC1, comboC2 } from '../../engine/combos';
 import { describeHand } from '../../engine/handinfo';
-import { randomSeed } from '../../engine/rng';
-import { NODE_TYPES, NODE_TYPE_INFO, type SpotPackage, type SpotRequest } from '../../engine/types';
+import { NODE_TYPE_INFO, STREET_LABEL, type SpotPackage, type SpotRequest, type Street } from '../../engine/types';
 import { levelFromXp } from '../../learning/progress';
-import { unlockedFamilies } from '../../learning/families';
-import { parseFamily } from '../../engine/types';
+import { unlockedFamilies, type SeatPref } from '../../learning/families';
+import { requestForFamily } from '../../learning/selector';
 import { achievementById } from '../../learning/achievements';
 import { useStore, useToasts } from '../../state/store';
 import { engine } from '../../worker/client';
 import { CardBack, CardText, PlayingCard } from '../components/Cards';
 import { Ring } from '../components/Charts';
 import { celebrate } from '../components/Overlays';
+import { SeatPicker, seatOrUndefined, type Seat } from '../components/SeatPicker';
 import { useFelt } from '../components/TablePanels';
 import { useNav } from '../nav';
 import { sfx } from '../sound';
@@ -20,6 +20,9 @@ import { ACTION_COLOR, bb, pct } from '../util';
 
 const DURATION = 180_000;
 const MAX_STRIKES = 3;
+
+type BlitzMode = 'preflop' | 'postflop' | 'mixed';
+const MODE_STREETS: Record<BlitzMode, Street[]> = { preflop: ['preflop'], postflop: ['flop', 'turn', 'river'], mixed: ['preflop', 'flop', 'turn', 'river'] };
 
 interface Item {
   spot: SpotPackage;
@@ -50,10 +53,11 @@ function itemDifficulty(spot: SpotPackage, k: number): number {
   return d;
 }
 
-/** Deal up to three different hands from one solved spot, preferring ones near the player's rating. */
+/** Deal a few different hands from one solved spot (more preflop, where spots are instant), preferring ones near the player's rating. */
 function dealItems(spot: SpotPackage, rating: number): Item[] {
   const cands: Item[] = [];
-  for (let t = 0; t < 14; t++) {
+  const want = spot.street === 'preflop' ? 4 : 3;
+  for (let t = 0; t < 18; t++) {
     let total = 0;
     for (const w of spot.hero.weights) total += w;
     let x = Math.random() * total;
@@ -65,15 +69,19 @@ function dealItems(spot: SpotPackage, rating: number): Item[] {
     if (cands.some((c) => c.k === k)) continue;
     cands.push({ spot, k, difficulty: itemDifficulty(spot, k) });
   }
-  return cands.sort((a, b) => Math.abs(a.difficulty - rating) - Math.abs(b.difficulty - rating)).slice(0, 3);
+  return cands.sort((a, b) => Math.abs(a.difficulty - rating) - Math.abs(b.difficulty - rating)).slice(0, want);
 }
 
-function blitzRequest(): SpotRequest {
+function blitzRequest(mode: BlitzMode, seats: SeatPref | undefined): SpotRequest {
   const s = useStore.getState();
-  const fams = unlockedFamilies(levelFromXp(s.xp).level, s.settings.unlockAll);
-  const f = fams[Math.floor(Math.random() * fams.length)];
-  const { nodeType, texture } = f ? parseFamily(f) : { nodeType: NODE_TYPES[0], texture: undefined };
-  return { seed: randomSeed(), nodeType, texture: Math.random() < 0.5 ? texture : undefined, profile: 'gto' };
+  const level = levelFromXp(s.xp).level;
+  let fams = unlockedFamilies(level, s.settings.unlockAll, MODE_STREETS[mode], seats);
+  if (!fams.length) fams = unlockedFamilies(level, true, MODE_STREETS[mode], seats);
+  if (!fams.length) fams = unlockedFamilies(level, true, MODE_STREETS[mode]);
+  const req = requestForFamily(fams[Math.floor(Math.random() * fams.length)], 'gto', seats);
+  // Half the postflop spots ignore the texture so boards stay varied.
+  if (req.street !== 'preflop' && Math.random() < 0.5) delete req.texture;
+  return req;
 }
 
 export function Blitz() {
@@ -90,6 +98,11 @@ export function Blitz() {
   const [answers, setAnswers] = useState<Answer[]>([]);
   const [flash, setFlash] = useState<{ ok: boolean; text: string } | null>(null);
   const [left, setLeft] = useState(DURATION);
+  const [mode, setMode] = useState<BlitzMode>('preflop');
+  const [hero, setHero] = useState<Seat>('any');
+  const [villain, setVillain] = useState<Seat>('any');
+  const config = useRef<{ mode: BlitzMode; seats: SeatPref | undefined }>({ mode: 'preflop', seats: undefined });
+  const nextReq = () => blitzRequest(config.current.mode, config.current.seats);
   const queue = useRef<Item[]>([]);
   const inflight = useRef<Promise<SpotPackage>[]>([]);
   const startTs = useRef(0);
@@ -100,7 +113,7 @@ export function Blitz() {
 
   const topUp = useCallback(() => {
     while (inflight.current.length < 2) {
-      const p = engine.generate(blitzRequest(), true);
+      const p = engine.generate(nextReq(), true);
       inflight.current.push(p);
       p.then((spot) => {
         inflight.current = inflight.current.filter((x) => x !== p);
@@ -141,6 +154,7 @@ export function Blitz() {
   );
 
   const start = useCallback(async () => {
+    config.current = { mode, seats: hero === 'any' && villain === 'any' ? undefined : { hero: seatOrUndefined(hero), villain: seatOrUndefined(villain) } };
     ended.current = false;
     queue.current = [];
     answersRef.current = [];
@@ -153,14 +167,15 @@ export function Blitz() {
     ratingRef.current = useStore.getState().counters.blitzRating;
     setRating(ratingRef.current);
     setPhase('loading');
-    const first = await engine.generate(blitzRequest());
+    const first = await engine.generate(nextReq());
     queue.current.push(...dealItems(first, ratingRef.current));
     topUp();
     startTs.current = Date.now();
     setLeft(DURATION);
     setPhase('running');
     void nextItem();
-  }, [nextItem, topUp]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextItem, topUp, mode, hero, villain]);
 
   const answersRef = useRef<Answer[]>([]);
   const scoreRef = useRef(0);
@@ -233,6 +248,13 @@ export function Blitz() {
           <span className="deco">⚡</span>
           <h1>Blitz</h1>
           <p>Three minutes. Three strikes. You see the villain's range and action plus your hand; pick the action fast. Good or better scores a point; a mistake or blunder is a strike.</p>
+          <div className="seg" style={{ marginTop: 10 }}>
+            {(['preflop', 'postflop', 'mixed'] as BlitzMode[]).map((m) => (
+              <button key={m} className={mode === m ? 'on' : ''} onClick={() => setMode(m)}>
+                {m === 'preflop' ? '🌰 Preflop' : m === 'postflop' ? '🍂 Postflop' : '🔀 Mixed'}
+              </button>
+            ))}
+          </div>
           <div className="row" style={{ marginTop: 12, gap: 10 }}>
             <button className="btn big" onClick={() => void start()}>
               ▶ Start a run
@@ -254,10 +276,23 @@ export function Blitz() {
           </div>
         </div>
         <div className="panel">
-          <h3>Why speed drills?</h3>
+          <h3>Seats</h3>
+          <SeatPicker
+            hero={hero}
+            villain={villain}
+            onChange={(h, v) => {
+              setHero(h);
+              setVillain(v);
+            }}
+          />
+        </div>
+        <div className="panel">
+          <h3>Why speed drills, and why preflop first?</h3>
           <p className="small muted" style={{ margin: 0 }}>
-            Experts don't calculate everything; they recognise patterns instantly. Short, rapid classification trials (like Kellman's perceptual-learning modules) build that fluency. Blitz
-            complements range building: build slowly in Training, recognise quickly here. Missed hands are listed at the end so you can rebuild those spots slowly.
+            Experts don't calculate everything; they recognise patterns instantly. Short, rapid classification trials (like Kellman's perceptual-learning modules) build that fluency, and
+            automaticity grows fastest when the same situation always has the same answer, which is true preflop and much less true postflop. So Blitz is best for preflop once you've
+            learned the ranges slowly in Training; postflop Blitz is a good check, not the main course. Time pressure doesn't help new material (it can even hurt transfer), so build
+            first, then speed up, and spread runs over days. Missed hands are listed at the end so you can rebuild those spots slowly.
           </p>
         </div>
         {history.length > 0 && (
@@ -326,7 +361,8 @@ export function Blitz() {
                 <span style={{ fontSize: '1.3rem' }}>{m.hand.lossPct > 4 ? '✗' : '≈'}</span>
                 <div className="small">
                   <div>
-                    <CardText cards={[comboC1[id], comboC2[id]]} /> on <CardText cards={m.item.spot.board} /> · {NODE_TYPE_INFO[m.item.spot.nodeType].short}
+                    <CardText cards={[comboC1[id], comboC2[id]]} /> {m.item.spot.board.length ? <>on <CardText cards={m.item.spot.board} /></> : `from ${m.item.spot.heroPos} vs ${m.item.spot.villainPos}`} ·{' '}
+                    {STREET_LABEL[m.item.spot.street]} {NODE_TYPE_INFO[m.item.spot.nodeType].short}
                   </div>
                   <div className="muted">
                     {d.label} · you: <b>{m.item.spot.actions[m.hand.action].short}</b> · best: <b>{m.item.spot.actions[m.hand.best].short}</b> (−{bb(m.hand.lossBb, 2)})
@@ -412,12 +448,15 @@ function BlitzItem({
               {spot.scenario.name} · You are {spot.heroPos}
             </span>
             <span className="spacer" />
-            <span>{NODE_TYPE_INFO[spot.nodeType].short}</span>
+            <span>
+              {STREET_LABEL[spot.street]} · {NODE_TYPE_INFO[spot.nodeType].short}
+            </span>
           </div>
           <div className="board">
             {spot.board.map((c, i) => (
               <PlayingCard key={i} card={c} size={42} />
             ))}
+            {spot.board.length === 0 && <div className="small" style={{ opacity: 0.85, padding: '18px 0' }}>{spot.history[0].lines.join(' → ')}</div>}
           </div>
           <div className="pot">
             Pot {bb(spot.pot)}

@@ -1,8 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { FINDS, type FindId, type Tendencies } from '../../engine/analysis';
 import { PROFILES, type ProfileId } from '../../engine/profiles';
-import { TEXTURES, TEXTURE_IDS } from '../../engine/texture';
-import { NODE_TYPES, NODE_TYPE_INFO, familyKey } from '../../engine/types';
+import { NODE_TYPE_INFO, STREETS, STREET_LABEL, familyKey, nodeTypesFor, type Street } from '../../engine/types';
+import { columnLabel, columnsFor } from '../../learning/families';
 import { levelFromXp, titleFor } from '../../learning/progress';
 import { useStore } from '../../state/store';
 import type { AttemptRecord } from '../../state/types';
@@ -72,6 +72,11 @@ export function Progress() {
   );
 
   const bluffSel = avgOf(recent, 'bluffSel');
+  const [mapStreet, setMapStreet] = useState<Street>('river');
+  const byStreet = STREETS.map((st) => {
+    const recs = history.filter((r) => (r.street ?? 'river') === st).slice(0, 25);
+    return { st, n: recs.length, avg: recs.length ? recs.reduce((a, r) => a + r.score, 0) / recs.length : NaN };
+  });
 
   if (!history.length)
     return (
@@ -238,23 +243,47 @@ export function Progress() {
       </div>
 
       <div className="panel">
-        <h3>🗺️ Mastery map</h3>
+        <h3>🛤️ By street</h3>
+        <p className="small muted">Average score over your last 25 spots on each street.</p>
+        <div className="statgrid">
+          {byStreet.map((b) => (
+            <div key={b.st} className="stat-tile">
+              <div className="k">{STREET_LABEL[b.st]}</div>
+              <div className="v">{Number.isFinite(b.avg) ? b.avg.toFixed(0) : '–'}</div>
+              <div className="d muted">{b.n ? `${b.n} recent spot${b.n === 1 ? '' : 's'}` : 'not played yet'}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">
+          <h3>🗺️ Mastery map</h3>
+          <div className="spacer" />
+          <div className="seg">
+            {STREETS.map((st) => (
+              <button key={st} className={mapStreet === st ? 'on' : ''} onClick={() => setMapStreet(st)}>
+                {STREET_LABEL[st]}
+              </button>
+            ))}
+          </div>
+        </div>
         <div style={{ overflowX: 'auto' }}>
           <table className="compare-table">
             <thead>
               <tr>
                 <th>Decision</th>
-                {TEXTURE_IDS.map((t) => (
-                  <th key={t}>{TEXTURES[t].label}</th>
+                {columnsFor(mapStreet).map((t) => (
+                  <th key={t}>{columnLabel(mapStreet, t)}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {NODE_TYPES.map((n) => (
+              {nodeTypesFor(mapStreet).map((n) => (
                 <tr key={n}>
                   <td>{NODE_TYPE_INFO[n].short}</td>
-                  {TEXTURE_IDS.map((t) => {
-                    const f = families[familyKey(n, t)];
+                  {columnsFor(mapStreet).map((t) => {
+                    const f = families[familyKey(mapStreet, n, t)];
                     const m = f?.reps ? f.mastery : NaN;
                     return (
                       <td key={t} className="num" style={{ background: Number.isFinite(m) ? `color-mix(in srgb, var(--sage) ${Math.round(m * 70)}%, transparent)` : undefined }}>

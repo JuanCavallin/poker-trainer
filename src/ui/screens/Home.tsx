@@ -1,8 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import { FINDS } from '../../engine/analysis';
-import { TEXTURES } from '../../engine/texture';
-import { parseFamily } from '../../engine/types';
-import { ALL_FAMILIES, familyLabel, familyUnlockLevel } from '../../learning/families';
+import { ALL_FAMILIES, familyHue, familyLabel, familyUnlockLevel, type Focus } from '../../learning/families';
 import { plantStage, retrievability } from '../../learning/memory';
 import { levelFromXp, titleFor } from '../../learning/progress';
 import { QUEST_BONUS } from '../../learning/quests';
@@ -63,9 +61,16 @@ export function Home() {
           </div>
           <h1>Read their range. Build yours.</h1>
           <p>
-            Every spot shows you the villain's range and action first. Paint your own range, lock it in, then play the hand you're dealt. Scores come from a river solver
-            running right in your browser.
+            Preflop, flop, turn or river: see the villain's range, paint your own, lock it in, then play the hand you're dealt. Every answer comes from a solver running right in
+            your browser.
           </p>
+          <div className="seg" style={{ marginTop: 10, background: 'rgba(255,255,255,0.18)' }}>
+            {(['all', 'preflop', 'postflop'] as Focus[]).map((fo) => (
+              <button key={fo} className={s.settings.focus === fo ? 'on' : ''} onClick={() => s.updateSettings({ focus: fo })} title="What Training deals">
+                {fo === 'all' ? '🔀 Every street' : fo === 'preflop' ? '🌰 Preflop' : '🍂 Postflop'}
+              </button>
+            ))}
+          </div>
           <div className="row wrap" style={{ marginTop: 14, gap: 10 }}>
             <button className="btn big" onClick={() => go('train', { kind: 'regular' })}>
               ▶ {s.counters.spots ? 'Continue training' : 'Deal my first spot'}
@@ -108,7 +113,12 @@ export function Home() {
           <button className="mode-card" onClick={() => go('woodpecker')}>
             <span className="ic">🐦</span>
             <h3>Woodpecker</h3>
-            <p>Re-solve the same set in shrinking time, with suits reshuffled each cycle.</p>
+            <p>Re-solve the same set in shrinking time. Best for preflop charts.</p>
+          </button>
+          <button className="mode-card" onClick={() => go('sketch', { kind: 'sketch' })}>
+            <span className="ic">✏️</span>
+            <h3>Range Sketch</h3>
+            <p>No ranges given: draw the villain's range after every action, then yours in reply. See how close you got at the end.</p>
           </button>
         </div>
 
@@ -122,12 +132,11 @@ export function Home() {
           </div>
           <div className="row wrap" style={{ gap: 6, justifyContent: 'space-around' }}>
             {gardenPreview.map(({ f, st, r }) => {
-              const { texture } = parseFamily(f);
               return (
                 <div key={f} className="col center" style={{ alignItems: 'center', gap: 0, width: 100 }}>
-                  <Plant stage={plantStage(st)} health={st?.reps ? r : 1} hue={TEXTURES[texture].hue} size={70} />
+                  <Plant stage={plantStage(st)} health={st?.reps ? r : 1} hue={familyHue(f)} size={70} />
                   <span className="tiny" style={{ fontWeight: 700, lineHeight: 1.2 }}>
-                    {familyLabel(f).node}
+                    {familyLabel(f).street} {familyLabel(f).node}
                     <br />
                     <span className="muted">{familyLabel(f).texture}</span>
                   </span>
@@ -259,12 +268,12 @@ function Welcome({ onClose }: { onClose: () => void }) {
     <Modal onClose={onClose}>
       <div className="center" style={{ fontSize: '3rem' }}>🦉🃏🔥</div>
       <h2 className="center">Welcome to Range Den</h2>
-      <p>A cozy place to get genuinely better at heads-up river play. Each spot runs like this:</p>
+      <p>A cozy place to get genuinely better at heads-up poker, from preflop to the river. Each spot runs like this:</p>
       <div className="col" style={{ gap: 10, margin: '12px 0' }}>
         <div className="insight">
           <span className="ic">👀</span>
           <span>
-            <b>Read the villain.</b> You see their range and their river action before anything else.
+            <b>Read the villain.</b> You see their range and their latest action before anything else.
           </span>
         </div>
         <div className="insight">
@@ -281,7 +290,7 @@ function Welcome({ onClose }: { onClose: () => void }) {
         </div>
       </div>
       <p className="small muted">
-        Under the hood: spaced repetition (your garden), interleaved spots, confidence ratings, and contrast "twin" spots, all borrowed from learning research. See the Learn tab for the why.
+        Under the hood: spaced repetition (your garden), interleaved spots, confidence ratings, contrast "twin" spots and Range Sketch, all borrowed from learning research. See the Learn tab for the why.
       </p>
       <button className="btn big block" onClick={onClose}>
         Let's go

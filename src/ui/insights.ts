@@ -64,7 +64,14 @@ export function buildInsights(spot: SpotPackage, user: Strategy, score: RangeSco
     const ub = score.userBluff[a];
     const rb = score.refBluff[a];
     const th = spot.theory.perAction[a]?.bluffShare;
-    if (u > 0.03 && Number.isFinite(ub)) {
+    if (u > 0.03 && Number.isFinite(ub) && spot.street !== 'river') {
+      if (Number.isFinite(rb) && Math.abs(ub - rb) > 0.12)
+        out.push({
+          icon: ub > rb ? '🎈' : '🧱',
+          text: `${pct(ub)} of your ${opt.short} range is behind the hands that continue (${ref}: ${pct(rb)}). ${ub > rb ? 'Prefer semi-bluffs with real outs over hands with none.' : 'You can add more draws and blockers as semi-bluffs.'}`,
+          tone: 'warn',
+        });
+    } else if (u > 0.03 && Number.isFinite(ub)) {
       const refTxt = Number.isFinite(rb) ? `${ref} ${pct(rb)}` : `${ref} doesn't use it`;
       const diff = Number.isFinite(rb) ? ub - rb : ub - (th ?? 0);
       if (Math.abs(diff) > 0.08)
@@ -109,7 +116,11 @@ export function explainHand(spot: SpotPackage, hand: HandResult): string[] {
   const eq = spot.hero.equity[k];
   const best = spot.actions[hand.best];
   const lines: string[] = [];
-  lines.push(`${comboPretty(id)}: ${d.label}, with ${pct(eq)} equity against villain's whole range.`);
+  if (spot.street === 'preflop') {
+    lines.push(`${d.label}: ${pct(eq)} all-in equity against villain's range. Preflop that is only part of the story: position and how well a hand plays after the flop decide how much of it you keep.`);
+  } else {
+    lines.push(`${comboPretty(id)}: ${d.label}, with ${pct(eq)} ${spot.street === 'river' ? '' : 'all-in '}equity against villain's whole range.`);
+  }
   const mix = spot.actions
     .map((a, i) => ({ a, p: spot.solution.strategy[k * nA + i] }))
     .filter((x) => x.p >= 0.05)
@@ -119,8 +130,9 @@ export function explainHand(spot: SpotPackage, hand: HandResult): string[] {
   if (best.aggressive) {
     const ce = spot.solution.contEq[k * nA + hand.best];
     const fold = spot.solution.villainFold[hand.best];
-    if (ce >= 0.5) lines.push(`${best.short} is a value bet: you beat ${pct(ce)} of the hands that continue.`);
-    else lines.push(`${best.short} works as a bluff: villain folds ${pct(fold)} of the time, and your hand rarely wins at showdown (${pct(eq)}).`);
+    if (ce >= 0.5) lines.push(`${best.short} is for value: you have ${pct(ce)} equity against the hands that continue.`);
+    else if (spot.street === 'river') lines.push(`${best.short} works as a bluff: villain folds ${pct(fold)} of the time, and your hand rarely wins at showdown (${pct(eq)}).`);
+    else lines.push(`${best.short} works as a semi-bluff: villain folds ${pct(fold)} of the time, and when called you still have ${pct(ce)} equity.`);
   } else if ((best.key === 'call' || best.key === 'fold') && Math.abs(eq - spot.theory.requiredEquity) < 0.03) {
     lines.push(`This hand has almost exactly the ${pct(spot.theory.requiredEquity)} equity a call needs, which is why calling and folding are close.`);
   } else if (best.key === 'call') {
@@ -128,7 +140,7 @@ export function explainHand(spot: SpotPackage, hand: HandResult): string[] {
   } else if (best.key === 'fold') {
     lines.push(`You need ${pct(spot.theory.requiredEquity)} equity to call, but this hand only has ${pct(eq)}.`);
   } else if (best.key === 'check') {
-    lines.push(`Checking keeps the pot small: worse hands won't call a bet and better ones won't fold.`);
+    lines.push(spot.street === 'river' ? `Checking keeps the pot small: worse hands won't call a bet and better ones won't fold.` : `Checking keeps the pot small and lets you see the next card; betting would mostly fold out worse and get called by better.`);
   }
   return lines;
 }

@@ -2,14 +2,16 @@ import { create } from 'zustand';
 import type { SpotRequest } from '../engine/types';
 import type { DrillFilters } from '../learning/selector';
 
-export type Screen = 'home' | 'train' | 'drills' | 'blitz' | 'woodpecker' | 'garden' | 'progress' | 'trophies' | 'shop' | 'learn' | 'settings';
+export type Screen = 'home' | 'train' | 'drills' | 'blitz' | 'woodpecker' | 'sketch' | 'garden' | 'progress' | 'trophies' | 'shop' | 'learn' | 'settings';
 
 export type SessionConfig =
   | { kind: 'regular' }
   | { kind: 'drill'; filters: DrillFilters; title: string }
   | { kind: 'review' }
   | { kind: 'woodpecker'; setId: string }
-  | { kind: 'replay'; request: SpotRequest; title?: string };
+  | { kind: 'replay'; request: SpotRequest; title?: string }
+  /** Range sketch: draw every range on the way to the decision yourself. */
+  | { kind: 'sketch'; filters?: DrillFilters; title?: string };
 
 interface Nav {
   screen: Screen;

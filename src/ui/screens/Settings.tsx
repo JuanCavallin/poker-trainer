@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { exportData, useStore } from '../../state/store';
 import type { Settings as S } from '../../state/types';
+import { SeatPicker } from '../components/SeatPicker';
 
 function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
   return <button className={`switch${on ? ' on' : ''}`} onClick={() => onChange(!on)} aria-pressed={on} />;
@@ -58,6 +59,26 @@ export function Settings() {
 
       <div className="panel">
         <h3>Training</h3>
+        <div className="toggle-row">
+          <div>
+            <b>Streets</b>
+            <div className="small muted">What Training deals: preflop charts, postflop spots (flop, turn and river), or everything mixed together.</div>
+          </div>
+          <div className="seg">
+            {(['all', 'preflop', 'postflop'] as const).map((t) => (
+              <button key={t} className={settings.focus === t ? 'on' : ''} onClick={() => set('focus', t)}>
+                {t === 'all' ? 'Every street' : t === 'preflop' ? 'Preflop' : 'Postflop'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ padding: '10px 0', borderBottom: '1px dashed var(--line)' }}>
+          <b>Seats</b>
+          <div className="small muted" style={{ marginBottom: 6 }}>
+            Fix your seat, the villain's, or both for Training and reviews. Drills, Blitz, Woodpecker and Range Sketch have their own seat choices.
+          </div>
+          <SeatPicker hero={settings.heroSeat} villain={settings.villainSeat} onChange={(h, v) => update({ heroSeat: h, villainSeat: v })} />
+        </div>
         <div className="toggle-row">
           <div>
             <b>Theory guides</b>
