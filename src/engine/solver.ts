@@ -1,135 +1,111 @@
-import type { HandList } from './equity';
-import { NODE_ACTION, NODE_FOLD, NODE_SHOWDOWN, pathTo, type TreeNode } from './tree';
+import { NODE_ACTION, NODE_CHANCE, NODE_FOLD, pathTo, type TreeNode } from './tree';
 
 /** Strategy lookup used by evaluation traversals: nA x nPlayerHands, row-major by action. */
 export type StrategyFn = (nodeId: number) => Float64Array;
 
 /**
- * Vectorised Discounted CFR (alpha 1.5, beta 0, gamma 2) over a heads-up river tree.
- * Values are zero-sum: each player "owns" half the starting pot, so a showdown win is
- * worth +(pot/2 + opponent's river investment).
+ * A two-player zero-sum game over a public tree. Values are zero-sum: each player "owns" half the
+ * root pot, so folding costs the folder half the pot plus what they put in.
  */
-export class RiverSolver {
+export interface Game {
+  nodes: TreeNode[];
+  /** Number of hands (information sets per public node) for each player. */
+  n: [number, number];
+  /** Initial range weights. */
+  reach: [Float64Array, Float64Array];
+  pot: number;
+  halfPot: number;
+  /** Chance nodes: hand indices of each player that contain each card (those hands can't see that card). */
+  blocked?: [Int32Array[], Int32Array[]];
+  /** Opponent mass compatible with each of t's hands (card removal). */
+  oppMass(t: number, reachOpp: ArrayLike<number>, out: Float64Array): Float64Array;
+  /** Counterfactual showdown values for t's hands at a showdown node. */
+  showdownValue(node: TreeNode, t: number, reachOpp: ArrayLike<number>, out: Float64Array): void;
+}
+
+export interface SolveOptions {
+  maxIter?: number;
+  /** Stop once exploitability (% of pot) is below this. */
+  targetPct?: number;
+  /** How often to measure exploitability. */
+  checkEvery?: number;
+  /** Stop after this many milliseconds (checked between iterations). */
+  timeBudgetMs?: number;
+  onProgress?: (iter: number, explPct: number) => void;
+}
+
+interface Scratch {
+  cr: Float64Array[];
+  cv: Float64Array[];
+  ms: Float64Array;
+  mo: Float64Array;
+}
+
+const sumOf = (a: ArrayLike<number>, n: number): number => {
+  let s = 0;
+  for (let i = 0; i < n; i++) s += a[i];
+  return s;
+};
+
+/** Vectorised Discounted CFR (alpha 1.5, beta 0, gamma 2) with alternating updates. */
+export class Solver {
+  readonly game: Game;
   readonly nodes: TreeNode[];
   readonly pot: number;
   readonly halfPot: number;
-  readonly hands: [HandList, HandList];
   readonly reach: [Float64Array, Float64Array];
   iterations = 0;
 
-  private regret: (Float64Array | null)[];
-  private stratSum: (Float64Array | null)[];
-  private sigma: (Float64Array | null)[];
-  private childReach: (Float64Array[] | null)[];
-  private val: [Float64Array[], Float64Array[]];
-  /** same[t][i] = index of the identical combo in the opponent's list, or -1. */
-  private same: [Int32Array, Int32Array];
-  private cardSum = new Float64Array(52);
+  private regret: (Float32Array | null)[];
+  private stratSum: (Float32Array | null)[];
+  /** Current strategy (regret matching), refreshed whenever a node's regrets change. */
+  private sigma: (Float32Array | null)[];
+  private scratch: Scratch[] = [];
+  private maxA = 1;
+  private maxN: number;
   private avgCache = new Map<number, Float64Array>();
+  private pos = 0;
+  private neg = 0.5;
+  private gam = 0;
 
-  constructor(nodes: TreeNode[], pot: number, hands: [HandList, HandList], reach: [Float64Array, Float64Array]) {
-    this.nodes = nodes;
-    this.pot = pot;
-    this.halfPot = pot / 2;
-    this.hands = hands;
-    this.reach = reach;
-    this.regret = nodes.map(() => null);
-    this.stratSum = nodes.map(() => null);
-    this.sigma = nodes.map(() => null);
-    this.childReach = nodes.map(() => null);
-    this.val = [nodes.map(() => new Float64Array(hands[0].n)), nodes.map(() => new Float64Array(hands[1].n))];
-    for (const node of nodes) {
+  constructor(game: Game) {
+    this.game = game;
+    this.nodes = game.nodes;
+    this.pot = game.pot;
+    this.halfPot = game.halfPot;
+    this.reach = game.reach;
+    this.maxN = Math.max(game.n[0], game.n[1], 1);
+    this.regret = game.nodes.map(() => null);
+    this.stratSum = game.nodes.map(() => null);
+    this.sigma = game.nodes.map(() => null);
+    for (const node of game.nodes) {
       if (node.type !== NODE_ACTION) continue;
-      const size = node.actions.length * hands[node.player].n;
-      this.regret[node.id] = new Float64Array(size);
-      this.stratSum[node.id] = new Float64Array(size);
-      this.sigma[node.id] = new Float64Array(size);
-      this.childReach[node.id] = node.actions.map(() => new Float64Array(hands[node.player].n));
-    }
-    const mk = (t: 0 | 1) => {
-      const h = hands[t];
-      const o = hands[1 - t];
-      const arr = new Int32Array(h.n);
-      for (let i = 0; i < h.n; i++) arr[i] = o.indexOf[h.combos[i]];
-      return arr;
-    };
-    this.same = [mk(0), mk(1)];
-  }
-
-  // ---------------------------------------------------------------- terminals
-
-  /** Compatible opponent mass for each of t's hands. */
-  oppMass(t: number, reachOpp: ArrayLike<number>, out: Float64Array = new Float64Array(this.hands[t].n)): Float64Array {
-    const ht = this.hands[t];
-    const ho = this.hands[1 - t];
-    const cs = this.cardSum;
-    cs.fill(0);
-    let tot = 0;
-    for (let j = 0; j < ho.n; j++) {
-      const x = reachOpp[j];
-      if (x === 0) continue;
-      tot += x;
-      cs[ho.c1[j]] += x;
-      cs[ho.c2[j]] += x;
-    }
-    const same = this.same[t];
-    for (let i = 0; i < ht.n; i++) {
-      const s = same[i];
-      out[i] = tot - cs[ht.c1[i]] - cs[ht.c2[i]] + (s >= 0 ? reachOpp[s] : 0);
-    }
-    return out;
-  }
-
-  private foldValue(node: TreeNode, t: number, reachOpp: ArrayLike<number>, out: Float64Array): void {
-    const payoff = node.player === t ? -(this.halfPot + node.inv[t]) : this.halfPot + node.inv[1 - t];
-    this.oppMass(t, reachOpp, out);
-    for (let i = 0; i < out.length; i++) out[i] *= payoff;
-  }
-
-  private showdownValue(node: TreeNode, t: number, reachOpp: ArrayLike<number>, out: Float64Array): void {
-    const win = this.halfPot + node.inv[0];
-    const ht = this.hands[t];
-    const ho = this.hands[1 - t];
-    const cs = this.cardSum;
-    const st = ht.strength;
-    const so = ho.strength;
-    const ot = ht.order;
-    const oo = ho.order;
-    cs.fill(0);
-    let tot = 0;
-    let j = 0;
-    for (let k = 0; k < ht.n; k++) {
-      const i = ot[k];
-      const s = st[i];
-      while (j < ho.n && so[oo[j]] < s) {
-        const h = oo[j++];
-        const x = reachOpp[h];
-        tot += x;
-        cs[ho.c1[h]] += x;
-        cs[ho.c2[h]] += x;
-      }
-      out[i] = win * (tot - cs[ht.c1[i]] - cs[ht.c2[i]]);
-    }
-    cs.fill(0);
-    tot = 0;
-    j = ho.n - 1;
-    for (let k = ht.n - 1; k >= 0; k--) {
-      const i = ot[k];
-      const s = st[i];
-      while (j >= 0 && so[oo[j]] > s) {
-        const h = oo[j--];
-        const x = reachOpp[h];
-        tot += x;
-        cs[ho.c1[h]] += x;
-        cs[ho.c2[h]] += x;
-      }
-      out[i] -= win * (tot - cs[ht.c1[i]] - cs[ht.c2[i]]);
+      const size = node.actions.length * game.n[node.player];
+      this.regret[node.id] = new Float32Array(size);
+      this.stratSum[node.id] = new Float32Array(size);
+      this.sigma[node.id] = new Float32Array(size).fill(1 / node.actions.length);
+      this.maxA = Math.max(this.maxA, node.actions.length);
     }
   }
 
-  // ---------------------------------------------------------------- CFR
+  oppMass(t: number, reachOpp: ArrayLike<number>, out: Float64Array = new Float64Array(this.game.n[t])): Float64Array {
+    return this.game.oppMass(t, reachOpp, out);
+  }
 
-  private regretMatch(nodeId: number, nA: number, nP: number): Float64Array {
+  private buf(depth: number): Scratch {
+    while (this.scratch.length <= depth) {
+      const N = this.maxN;
+      this.scratch.push({
+        cr: Array.from({ length: this.maxA }, () => new Float64Array(N)),
+        cv: Array.from({ length: this.maxA }, () => new Float64Array(N)),
+        ms: new Float64Array(N),
+        mo: new Float64Array(N),
+      });
+    }
+    return this.scratch[depth];
+  }
+
+  private regretMatch(nodeId: number, nA: number, nP: number): void {
     const R = this.regret[nodeId]!;
     const S = this.sigma[nodeId]!;
     for (let i = 0; i < nP; i++) {
@@ -139,95 +115,149 @@ export class RiverSolver {
         if (r > 0) sum += r;
       }
       if (sum > 0) {
+        const inv = 1 / sum;
         for (let a = 0; a < nA; a++) {
           const r = R[a * nP + i];
-          S[a * nP + i] = r > 0 ? r / sum : 0;
+          S[a * nP + i] = r > 0 ? r * inv : 0;
         }
       } else {
         const u = 1 / nA;
         for (let a = 0; a < nA; a++) S[a * nP + i] = u;
       }
     }
-    return S;
   }
 
-  private cfr(nodeId: number, t: number, reachSelf: Float64Array, reachOpp: Float64Array): Float64Array {
+  private foldValue(node: TreeNode, t: number, reachOpp: ArrayLike<number>, out: Float64Array): void {
+    const payoff = node.player === t ? -(this.halfPot + node.inv[t]) : this.halfPot + node.inv[1 - t];
+    this.game.oppMass(t, reachOpp, out);
+    const n = this.game.n[t];
+    for (let i = 0; i < n; i++) out[i] *= payoff;
+  }
+
+  private cfr(nodeId: number, t: number, rs: Float64Array, ro: Float64Array, out: Float64Array, depth: number): void {
     const node = this.nodes[nodeId];
-    const out = this.val[t][nodeId];
+    const nT = this.game.n[t];
     if (node.type === NODE_FOLD) {
-      this.foldValue(node, t, reachOpp, out);
-      return out;
+      this.foldValue(node, t, ro, out);
+      return;
     }
-    if (node.type === NODE_SHOWDOWN) {
-      this.showdownValue(node, t, reachOpp, out);
-      return out;
-    }
-    const p = node.player;
-    const nA = node.actions.length;
-    const nP = this.hands[p].n;
-    const sig = this.regretMatch(nodeId, nA, nP);
-    const cr = this.childReach[nodeId]!;
-    out.fill(0);
-    if (p === t) {
-      for (let a = 0; a < nA; a++) {
-        const r = cr[a];
-        const base = a * nP;
-        for (let i = 0; i < nP; i++) r[i] = reachSelf[i] * sig[base + i];
-        const va = this.cfr(node.children[a], t, r, reachOpp);
-        for (let i = 0; i < nP; i++) out[i] += sig[base + i] * va[i];
-      }
-      const R = this.regret[nodeId]!;
-      const SS = this.stratSum[nodeId]!;
-      for (let a = 0; a < nA; a++) {
-        const va = this.val[t][node.children[a]];
-        const base = a * nP;
-        for (let i = 0; i < nP; i++) {
-          R[base + i] += va[i] - out[i];
-          SS[base + i] += reachSelf[i] * sig[base + i];
+    if (node.type === NODE_ACTION) {
+      const p = node.player;
+      const nA = node.actions.length;
+      const nP = this.game.n[p];
+      const sc = this.buf(depth);
+      const sig = this.sigma[nodeId]!;
+      if (p === t) {
+        for (let a = 0; a < nA; a++) {
+          const r = sc.cr[a];
+          const base = a * nP;
+          for (let i = 0; i < nP; i++) r[i] = rs[i] * sig[base + i];
+          this.cfr(node.children[a], t, r, ro, sc.cv[a], depth + 1);
+        }
+        out.fill(0, 0, nT);
+        for (let a = 0; a < nA; a++) {
+          const va = sc.cv[a];
+          const base = a * nP;
+          for (let i = 0; i < nP; i++) out[i] += sig[base + i] * va[i];
+        }
+        const R = this.regret[nodeId]!;
+        const SS = this.stratSum[nodeId]!;
+        const pos = this.pos;
+        const neg = this.neg;
+        const g = this.gam;
+        for (let a = 0; a < nA; a++) {
+          const va = sc.cv[a];
+          const base = a * nP;
+          for (let i = 0; i < nP; i++) {
+            const k = base + i;
+            const r = R[k];
+            R[k] = (r > 0 ? r * pos : r * neg) + va[i] - out[i];
+            SS[k] = SS[k] * g + rs[i] * sig[k];
+          }
+        }
+        this.regretMatch(nodeId, nA, nP);
+      } else {
+        out.fill(0, 0, nT);
+        const tmp = sc.cv[0];
+        const r = sc.cr[0];
+        for (let a = 0; a < nA; a++) {
+          const base = a * nP;
+          let mass = 0;
+          for (let i = 0; i < nP; i++) {
+            const x = ro[i] * sig[base + i];
+            r[i] = x;
+            mass += x;
+          }
+          if (mass <= 0) continue;
+          this.cfr(node.children[a], t, rs, r, tmp, depth + 1);
+          for (let i = 0; i < nT; i++) out[i] += tmp[i];
         }
       }
-    } else {
-      const nT = this.hands[t].n;
-      for (let a = 0; a < nA; a++) {
-        const r = cr[a];
-        const base = a * nP;
-        for (let i = 0; i < nP; i++) r[i] = reachOpp[i] * sig[base + i];
-        const va = this.cfr(node.children[a], t, reachSelf, r);
-        for (let i = 0; i < nT; i++) out[i] += va[i];
-      }
+      return;
     }
-    return out;
+    if (node.type === NODE_CHANCE) {
+      this.chance(node, t, rs, ro, out, depth, (child, rsC, roC, val) => this.cfr(child, t, rsC, roC, val, depth + 1));
+      return;
+    }
+    this.game.showdownValue(node, t, ro, out);
   }
 
-  private discount(t: number, T: number): void {
-    const ta = Math.pow(Math.max(0, T - 1), 1.5);
-    const pos = ta / (ta + 1);
-    const neg = 0.5;
-    const g = Math.pow((T - 1) / T, 2);
-    for (const node of this.nodes) {
-      if (node.type !== NODE_ACTION || node.player !== t) continue;
-      const R = this.regret[node.id]!;
-      const SS = this.stratSum[node.id]!;
-      for (let k = 0; k < R.length; k++) {
-        R[k] *= R[k] > 0 ? pos : neg;
-        SS[k] *= g;
-      }
+  /** Shared chance-node logic: masks blocked hands per card and sums weighted child values. */
+  private chance(
+    node: TreeNode,
+    t: number,
+    rs: ArrayLike<number>,
+    ro: ArrayLike<number>,
+    out: Float64Array,
+    depth: number,
+    visit: (child: number, rs: Float64Array, ro: Float64Array, val: Float64Array) => void,
+  ): void {
+    const blocked = this.game.blocked!;
+    const nT = this.game.n[t];
+    const nO = this.game.n[1 - t];
+    const sc = this.buf(depth);
+    const ms = sc.ms;
+    const mo = sc.mo;
+    const val = sc.cv[0];
+    out.fill(0, 0, nT);
+    const cards = node.cards!;
+    const weights = node.weights!;
+    for (let k = 0; k < cards.length; k++) {
+      const c = cards[k];
+      for (let i = 0; i < nT; i++) ms[i] = rs[i];
+      for (let i = 0; i < nO; i++) mo[i] = ro[i];
+      const bt = blocked[t][c];
+      const bo = blocked[1 - t][c];
+      for (let j = 0; j < bt.length; j++) ms[bt[j]] = 0;
+      for (let j = 0; j < bo.length; j++) mo[bo[j]] = 0;
+      if (sumOf(mo, nO) <= 0) continue;
+      visit(node.children[k], ms, mo, val);
+      for (let j = 0; j < bt.length; j++) val[bt[j]] = 0;
+      const w = weights[k];
+      for (let i = 0; i < nT; i++) out[i] += w * val[i];
     }
   }
 
-  /** Runs DCFR until exploitability drops below `targetPct` percent of the pot (checked every 50 iterations). */
-  solve(maxIter = 800, targetPct = 0.25): { iterations: number; exploitabilityPct: number } {
+  /** Runs DCFR until exploitability drops below `targetPct` percent of the pot. */
+  solve(opts: SolveOptions = {}): { iterations: number; exploitabilityPct: number } {
+    const maxIter = opts.maxIter ?? 800;
+    const target = opts.targetPct ?? 0.25;
+    const every = opts.checkEvery ?? 50;
+    const t0 = Date.now();
     let expl = Infinity;
+    const root = new Float64Array(this.maxN);
     for (let T = 1; T <= maxIter; T++) {
-      for (let t = 0; t < 2; t++) {
-        this.discount(t, T);
-        this.cfr(0, t, this.reach[t], this.reach[1 - t]);
-      }
+      const ta = Math.pow(Math.max(0, T - 1), 1.5);
+      this.pos = ta / (ta + 1);
+      this.gam = Math.pow((T - 1) / T, 2);
+      for (let t = 0; t < 2; t++) this.cfr(0, t, this.reach[t], this.reach[1 - t], root, 0);
       this.iterations = T;
-      if (T % 50 === 0 || T === maxIter) {
+      const timeUp = opts.timeBudgetMs != null && Date.now() - t0 > opts.timeBudgetMs;
+      if (T % every === 0 || T === maxIter || timeUp) {
         this.avgCache.clear();
         expl = this.exploitabilityPct();
-        if (expl < targetPct) break;
+        opts.onProgress?.(T, expl);
+        if (expl < target || timeUp) break;
       }
     }
     this.avgCache.clear();
@@ -242,7 +272,7 @@ export class RiverSolver {
     if (cached) return cached;
     const node = this.nodes[nodeId];
     const nA = node.actions.length;
-    const nP = this.hands[node.player].n;
+    const nP = this.game.n[node.player];
     const SS = this.stratSum[nodeId]!;
     const out = new Float64Array(nA * nP);
     for (let i = 0; i < nP; i++) {
@@ -260,19 +290,33 @@ export class RiverSolver {
    */
   evaluate(nodeId: number, t: number, reachOpp: ArrayLike<number>, tMode: 'avg' | 'br', strat: StrategyFn): Float64Array {
     const node = this.nodes[nodeId];
-    const nT = this.hands[t].n;
+    const nT = this.game.n[t];
     const out = new Float64Array(nT);
     if (node.type === NODE_FOLD) {
       this.foldValue(node, t, reachOpp, out);
       return out;
     }
-    if (node.type === NODE_SHOWDOWN) {
-      this.showdownValue(node, t, reachOpp, out);
+    if (node.type === NODE_CHANCE) {
+      const blocked = this.game.blocked!;
+      const nO = this.game.n[1 - t];
+      node.cards!.forEach((c, k) => {
+        const mo = Float64Array.from({ length: nO }, (_, i) => reachOpp[i]);
+        for (const j of blocked[1 - t][c]) mo[j] = 0;
+        if (sumOf(mo, nO) <= 0) return;
+        const v = this.evaluate(node.children[k], t, mo, tMode, strat);
+        for (const j of blocked[t][c]) v[j] = 0;
+        const w = node.weights![k];
+        for (let i = 0; i < nT; i++) out[i] += w * v[i];
+      });
+      return out;
+    }
+    if (node.type !== NODE_ACTION) {
+      this.game.showdownValue(node, t, reachOpp, out);
       return out;
     }
     const p = node.player;
     const nA = node.actions.length;
-    const nP = this.hands[p].n;
+    const nP = this.game.n[p];
     const s = strat(nodeId);
     if (p === t) {
       if (tMode === 'br') out.fill(-Infinity);
@@ -287,7 +331,12 @@ export class RiverSolver {
     } else {
       const r = new Float64Array(nP);
       for (let a = 0; a < nA; a++) {
-        for (let i = 0; i < nP; i++) r[i] = reachOpp[i] * s[a * nP + i];
+        let mass = 0;
+        for (let i = 0; i < nP; i++) {
+          r[i] = reachOpp[i] * s[a * nP + i];
+          mass += r[i];
+        }
+        if (mass <= 0) continue;
         const va = this.evaluate(node.children[a], t, r, tMode, strat);
         for (let i = 0; i < nT; i++) out[i] += va[i];
       }
@@ -301,13 +350,21 @@ export class RiverSolver {
     return node.children.map((c) => this.evaluate(c, node.player, reachOpp, tMode, strat));
   }
 
-  /** Both players' reach probabilities at `nodeId` under `strat`. */
+  /**
+   * Both players' reach at `nodeId` under `strat`. Cards dealt on the way zero the hands that hold them,
+   * so this is each player's range at the node. `cardsAt` overrides which card a chance node deals.
+   */
   reachAt(nodeId: number, strat: StrategyFn): [Float64Array, Float64Array] {
     const r: [Float64Array, Float64Array] = [Float64Array.from(this.reach[0]), Float64Array.from(this.reach[1])];
     for (const step of pathTo(this.nodes, nodeId)) {
       const node = this.nodes[step.node];
+      if (node.type === NODE_CHANCE) {
+        const c = node.cards![step.action];
+        for (const p of [0, 1]) for (const j of this.game.blocked![p][c]) r[p][j] = 0;
+        continue;
+      }
       const p = node.player;
-      const nP = this.hands[p].n;
+      const nP = this.game.n[p];
       const s = strat(step.node);
       const base = step.action * nP;
       for (let i = 0; i < nP; i++) r[p][i] *= s[base + i];
@@ -316,9 +373,9 @@ export class RiverSolver {
   }
 
   /** Average exploitability of the current average strategies, in chips per hand. */
-  exploitability(): number {
-    const v0 = this.evaluate(0, 0, this.reach[1], 'br', this.avgStrategy);
-    const v1 = this.evaluate(0, 1, this.reach[0], 'br', this.avgStrategy);
+  exploitability(strat: StrategyFn = this.avgStrategy): number {
+    const v0 = this.evaluate(0, 0, this.reach[1], 'br', strat);
+    const v1 = this.evaluate(0, 1, this.reach[0], 'br', strat);
     let b0 = 0;
     let b1 = 0;
     for (let i = 0; i < v0.length; i++) b0 += this.reach[0][i] * v0[i];
