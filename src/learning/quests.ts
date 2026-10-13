@@ -18,7 +18,10 @@ const TEMPLATES: QuestTemplate[] = [
   { kind: 'review', emoji: '💧', label: (n) => `Water ${n} thirsty plants (reviews)`, targets: [2, 3], xp: 45, chips: 20 },
   { kind: 'blitz', emoji: '⚡', label: () => 'Finish a Blitz run', targets: [1], xp: 40, chips: 15 },
   { kind: 'villain', emoji: '🦊', label: (n) => `Play ${n} spots against an exploitable villain`, targets: [2, 3], xp: 50, chips: 20, minLevel: 4 },
-  { kind: 'facing', emoji: '🛡️', label: (n) => `Defend against ${n} river bets`, targets: [3, 4], xp: 40, chips: 15 },
+  { kind: 'facing', emoji: '🛡️', label: (n) => `Defend against ${n} bets or raises`, targets: [3, 4], xp: 40, chips: 15 },
+  { kind: 'preflop', emoji: '🌰', label: (n) => `Build ${n} preflop ranges`, targets: [3, 4], xp: 40, chips: 15 },
+  { kind: 'early-street', emoji: '🍂', label: (n) => `Play ${n} flop or turn spots`, targets: [2, 3], xp: 45, chips: 20, minLevel: 2 },
+  { kind: 'sketch', emoji: '✏️', label: () => 'Finish a range sketch', targets: [1], xp: 55, chips: 25, minLevel: 2 },
   { kind: 'balance', emoji: '⚖️', label: (n) => `Bluff within 5 points of the solver ratio ${n} times`, targets: [2], xp: 55, chips: 25 },
   { kind: 'perfect-hand', emoji: '🎯', label: (n) => `Play ${n} hands rated Perfect`, targets: [3, 4], xp: 40, chips: 15 },
 ];
@@ -57,7 +60,13 @@ export function questIncrement(q: Quest, ev: QuestEvent): number {
     case 'villain':
       return r.profile !== 'gto' ? 1 : 0;
     case 'facing':
-      return r.nodeType === 'ip-vs-bet' || r.nodeType === 'oop-vs-bet' ? 1 : 0;
+      return r.nodeType === 'ip-vs-bet' || r.nodeType === 'oop-vs-bet' || r.nodeType === 'vs-open' || r.nodeType === 'vs-3bet' || r.nodeType === 'vs-4bet' ? 1 : 0;
+    case 'preflop':
+      return r.street === 'preflop' ? 1 : 0;
+    case 'early-street':
+      return r.street === 'flop' || r.street === 'turn' ? 1 : 0;
+    case 'sketch':
+      return r.kind === 'sketch' ? 1 : 0;
     case 'balance':
       return ev.balanceHit ? 1 : 0;
     case 'perfect-hand':

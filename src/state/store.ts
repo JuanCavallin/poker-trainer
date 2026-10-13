@@ -45,6 +45,9 @@ export const defaultSettings: Settings = {
   unlockAll: false,
   confidence: true,
   reducedMotion: false,
+  focus: 'all',
+  heroSeat: 'any',
+  villainSeat: 'any',
 };
 
 function freshState(): PersistedState {
@@ -69,6 +72,9 @@ function freshState(): PersistedState {
       reviews: 0,
       woodpeckerCycles: 0,
       twins: 0,
+      streets: {},
+      sketches: 0,
+      sketchBest: 0,
     },
     achievements: {},
     quests: { day: '', quests: [], bonusClaimed: false },
@@ -191,6 +197,12 @@ export const useStore = create<Store>()(
           if (extra.balanceHit) counters.balanceHits += 1;
           if (rec.kind === 'review') counters.reviews += 1;
           if (rec.kind === 'twin') counters.twins += 1;
+          const street = rec.street ?? 'river';
+          counters.streets = { ...counters.streets, [street]: (counters.streets?.[street] ?? 0) + 1 };
+          if (rec.sketch) {
+            counters.sketches += 1;
+            counters.sketchBest = Math.max(counters.sketchBest, Math.round(rec.sketch.overlap * 100));
+          }
           const { streak, up } = bumpStreak(before.streak, dayKey());
           const scraps: Scrap[] = rec.finds.map((find, i) => ({
             id: `${rec.id}-${i}`,
@@ -308,7 +320,7 @@ export const useStore = create<Store>()(
           ...current,
           ...p,
           settings: { ...defaultSettings, ...(p.settings ?? {}) },
-          counters: { ...current.counters, ...(p.counters ?? {}) },
+          counters: { ...current.counters, ...(p.counters ?? {}), streets: { ...(p.counters?.streets ?? {}) } },
         };
       },
     },

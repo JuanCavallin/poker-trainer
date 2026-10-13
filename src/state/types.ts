@@ -1,10 +1,12 @@
 import type { FindId, HandGrade, Tendencies } from '../engine/analysis';
+import type { Position } from '../engine/seats';
 import type { ProfileId } from '../engine/profiles';
 import type { TextureId } from '../engine/texture';
-import type { NodeType, SpotRequest } from '../engine/types';
+import type { NodeType, PotType, SpotRequest, Street } from '../engine/types';
+import type { Focus } from '../learning/families';
 import type { FamilyState } from '../learning/memory';
 
-export type SessionKind = 'regular' | 'drill' | 'woodpecker' | 'review' | 'replay' | 'twin';
+export type SessionKind = 'regular' | 'drill' | 'woodpecker' | 'review' | 'replay' | 'twin' | 'sketch';
 export type Confidence = 'unsure' | 'fair' | 'sure';
 
 export interface AttemptRecord {
@@ -16,7 +18,11 @@ export interface AttemptRecord {
   texture: TextureId;
   profile: ProfileId;
   scenarioId: string;
-  potType: 'SRP' | '3BP';
+  potType: PotType;
+  /** Missing on records from before flop, turn and preflop spots existed (those were river spots). */
+  street?: Street;
+  heroPos?: string;
+  villainPos?: string;
   request: SpotRequest;
   score: number;
   accuracy: number;
@@ -31,6 +37,8 @@ export interface AttemptRecord {
   capture: number | null;
   finds: FindId[];
   difficulty: number;
+  /** Range sketch attempts: how closely each drawn range matched the real one. */
+  sketch?: { steps: number; overlap: number };
 }
 
 export interface Counters {
@@ -47,6 +55,10 @@ export interface Counters {
   reviews: number;
   woodpeckerCycles: number;
   twins: number;
+  /** Spots finished on each street. */
+  streets: Partial<Record<Street, number>>;
+  sketches: number;
+  sketchBest: number;
 }
 
 export interface Settings {
@@ -58,6 +70,11 @@ export interface Settings {
   unlockAll: boolean;
   confidence: boolean;
   reducedMotion: boolean;
+  /** Which streets Training deals. */
+  focus: Focus;
+  /** Fixed seats for Training (and the default for other modes); 'any' deals random seats. */
+  heroSeat: Position | 'any';
+  villainSeat: Position | 'any';
 }
 
 export interface Streak {
@@ -67,7 +84,7 @@ export interface Streak {
   freezes: number;
 }
 
-export type QuestKind = 'spots' | 'score80' | 'find' | 'review' | 'blitz' | 'villain' | 'facing' | 'balance' | 'perfect-hand';
+export type QuestKind = 'spots' | 'score80' | 'find' | 'review' | 'blitz' | 'villain' | 'facing' | 'balance' | 'perfect-hand' | 'preflop' | 'early-street' | 'sketch';
 
 export interface Quest {
   id: string;
@@ -106,6 +123,8 @@ export interface WoodpeckerSet {
   name: string;
   createdAt: number;
   mode: 'mirror' | 'exact';
+  /** What the set drills (older sets were river-only). */
+  street?: Street | 'postflop';
   spots: SpotRequest[];
   cycles: WoodpeckerCycle[];
 }

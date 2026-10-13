@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { familyKey } from '../engine/types';
 import type { AttemptRecord } from '../state/types';
-import { ALL_FAMILIES, unlockedFamilies } from './families';
+import { ALL_FAMILIES, familyFitsSeats, requestFamily, unlockedFamilies } from './families';
 import { DAY, newFamily, plantStage, retrievability, reviewFamily } from './memory';
 import { levelFromXp, xpForLevel } from './progress';
 import { makeDailyQuests } from './quests';
@@ -50,7 +50,7 @@ describe('adaptive selection', () => {
       const last = fams[i % fams.length];
       const recent = [{ family: last, score: 80 } as AttemptRecord];
       const pick = nextRegular({ families: {}, level: 1, unlockAll: false, recent, relearn: [], sessionIndex: i, now: Date.now() });
-      const fam = familyKey(pick.request.nodeType!, pick.request.texture!);
+      const fam = requestFamily(pick.request)!;
       expect(fam).not.toBe(last);
       expect(fams).toContain(fam);
       expect(pick.request.profile).toBe('gto');
@@ -58,18 +58,37 @@ describe('adaptive selection', () => {
   });
 
   it('brings a missed family back after a few other spots', () => {
-    const missed = familyKey('ip-vs-bet', 'dry');
+    const missed = familyKey('river', 'ip-vs-bet', 'dry');
     const pick = nextRegular({
       families: {},
       level: 1,
       unlockAll: false,
-      recent: [{ family: familyKey('ip-vs-check', 'paired'), score: 80 } as AttemptRecord],
+      recent: [{ family: familyKey('river', 'ip-vs-check', 'paired'), score: 80 } as AttemptRecord],
       relearn: [{ family: missed, at: 0 }],
       sessionIndex: 3,
       now: Date.now(),
     });
     expect(pick.reason).toBe('relearn');
-    expect(familyKey(pick.request.nodeType!, pick.request.texture!)).toBe(missed);
+    expect(requestFamily(pick.request)).toBe(missed);
+  });
+
+  it('keeps river family keys stable and parses every street', () => {
+    expect(familyKey('river', 'ip-vs-bet', 'dry')).toBe('ip-vs-bet|dry');
+    expect(familyKey('preflop', 'vs-open', 'BB')).toBe('pre:vs-open|BB');
+    expect(ALL_FAMILIES.length).toBe(20 + 20 + 20 + 24);
+    expect(new Set(ALL_FAMILIES).size).toBe(ALL_FAMILIES.length);
+  });
+
+  it('honours a training focus and fixed seats', () => {
+    for (let i = 0; i < 100; i++) {
+      const pre = nextRegular({ families: {}, level: 10, unlockAll: true, recent: [], relearn: [], sessionIndex: i, now: Date.now(), streets: ['preflop'], seats: { hero: 'BB' } });
+      expect(pre.request.street).toBe('preflop');
+      expect(pre.request.heroPos).toBe('BB');
+      const post = nextRegular({ families: {}, level: 10, unlockAll: true, recent: [], relearn: [], sessionIndex: i, now: Date.now(), streets: ['flop', 'turn'], seats: { hero: 'BTN', villain: 'BB' } });
+      expect(['flop', 'turn']).toContain(post.request.street);
+      expect(post.request.nodeType!.startsWith('ip')).toBe(true);
+      expect(familyFitsSeats(requestFamily(post.request)!, { hero: 'BTN', villain: 'BB' })).toBe(true);
+    }
   });
 });
 

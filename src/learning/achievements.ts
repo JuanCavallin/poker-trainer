@@ -41,6 +41,18 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'golden-1', name: 'Golden Bloom', emoji: '🌟', desc: 'Grow your first golden plant.', target: 1, value: (s) => plantsAtLeast(s, 4), chips: 120 },
   { id: 'review-20', name: 'Gardener', emoji: '💧', desc: 'Water 20 thirsty plants.', target: 20, value: (s) => s.counters.reviews, chips: 60 },
   { id: 'twin-5', name: 'Spot the Difference', emoji: '👯', desc: 'Play five twin spots.', target: 5, value: (s) => s.counters.twins, chips: 50 },
+  { id: 'preflop-50', name: 'Chart Scholar', emoji: '🌰', desc: 'Build 50 preflop ranges.', target: 50, value: (s) => s.counters.streets?.preflop ?? 0, chips: 70 },
+  {
+    id: 'streets-4',
+    name: 'Every Street',
+    emoji: '🛤️',
+    desc: 'Play five spots on each street: preflop, flop, turn and river.',
+    target: 5,
+    value: (s) => Math.min(...(['preflop', 'flop', 'turn', 'river'] as const).map((k) => s.counters.streets?.[k] ?? 0)),
+    chips: 80,
+  },
+  { id: 'sketch-1', name: 'First Sketch', emoji: '✏️', desc: 'Finish a range sketch.', target: 1, value: (s) => s.counters.sketches ?? 0, chips: 40 },
+  { id: 'sketch-75', name: 'Mind Reader', emoji: '🔮', desc: 'Score 75%+ overlap on a range sketch.', target: 75, value: (s) => s.counters.sketchBest ?? 0, chips: 100 },
 ];
 
 export const achievementById = (id: string) => ACHIEVEMENTS.find((a) => a.id === id);
