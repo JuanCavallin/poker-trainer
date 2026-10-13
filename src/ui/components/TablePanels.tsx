@@ -14,7 +14,28 @@ export function useFelt() {
   return item?.colors ?? ['#4a9a74', '#2c6b50'];
 }
 
-export function TablePanel({ spot, bubble, heroCards }: { spot: SpotPackage; bubble?: string | null; heroCards?: number[] }) {
+/** "turn" on the flop, "river" on the turn: the street of the card a flop or turn solve assumes. */
+export const nextStreetName = (spot: SpotPackage) => (spot.street === 'flop' ? 'turn' : 'river');
+
+/** The card a flop or turn solve assumes comes next, shown faded in the next board slot. */
+export function AssumedCard({ spot, size, onChange }: { spot: SpotPackage; size: number; onChange?: () => void }) {
+  if (spot.nextCard == null) return null;
+  const card = (
+    <span className="assumed-card" title={`Solved assuming the ${nextStreetName(spot)} is this card`}>
+      <PlayingCard card={spot.nextCard} size={size} />
+      <span className="assumed-badge">{onChange ? '⟳' : '?'}</span>
+    </span>
+  );
+  return onChange ? (
+    <button className="assumed-btn" onClick={onChange} title={`Solved assuming the ${nextStreetName(spot)} is this card. Click to pick another and re-solve.`}>
+      {card}
+    </button>
+  ) : (
+    card
+  );
+}
+
+export function TablePanel({ spot, bubble, heroCards, onPickNext }: { spot: SpotPackage; bubble?: string | null; heroCards?: number[]; onPickNext?: () => void }) {
   const [fa, fb] = useFelt();
   const companion = useStore((s) => cosmeticById(s.cosmetics.companion));
   const profile = PROFILES[spot.profile];
@@ -39,10 +60,28 @@ export function TablePanel({ spot, bubble, heroCards }: { spot: SpotPackage; bub
               <PlayingCard card={c} size={44} />
             </div>
           ))}
-          {Array.from({ length: 5 - spot.board.length }, (_, i) => (
+          {spot.nextCard != null && (
+            <div style={{ marginLeft: 4 }}>
+              <AssumedCard spot={spot} size={44} onChange={onPickNext} />
+            </div>
+          )}
+          {Array.from({ length: 5 - spot.board.length - (spot.nextCard != null ? 1 : 0) }, (_, i) => (
             <div key={`e${i}`} className="pcard empty-slot" style={{ ['--w' as string]: '44px' }} />
           ))}
         </div>
+        {spot.nextCard != null && (
+          <div className="tiny" style={{ textAlign: 'center', opacity: 0.85, marginTop: -4, marginBottom: 6 }}>
+            Solved for this {nextStreetName(spot)}
+            {onPickNext && (
+              <>
+                {' · '}
+                <button className="linkish" onClick={onPickNext}>
+                  pick another
+                </button>
+              </>
+            )}
+          </div>
+        )}
         <div className="pot">
           <span className="chipstack" /> Pot {bb(spot.pot)}
           {spot.toCall > 0 && <small> · {bb(spot.toCall)} to call</small>}

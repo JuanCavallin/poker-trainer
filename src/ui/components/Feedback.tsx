@@ -60,6 +60,7 @@ export function Feedback({
   onNext,
   nextLabel,
   onTwin,
+  onResolveNext,
 }: {
   spot: SpotPackage;
   user: Strategy;
@@ -74,6 +75,8 @@ export function Feedback({
   onNext: () => void;
   nextLabel: string;
   onTwin?: (kind: 'card' | 'villain') => void;
+  /** Flop and turn spots: re-solve for a different next card. */
+  onResolveNext?: () => void;
 }) {
   const [tab, setTab] = useState<'hand' | 'range' | 'insights'>('hand');
   const [gridView, setGridView] = useState<'side' | 'diff'>('side');
@@ -353,6 +356,11 @@ export function Feedback({
         <button className="btn big sage" onClick={onNext}>
           {nextLabel} <span className="kbd">Enter</span>
         </button>
+        {onResolveNext && spot.nextCard != null && (
+          <button className="btn secondary" onClick={onResolveNext} title={`This spot was solved assuming one ${spot.street === 'flop' ? 'turn' : 'river'} card. Pick another to see how the strategy changes.`}>
+            🔁 Re-solve for another {spot.street === 'flop' ? 'turn' : 'river'}
+          </button>
+        )}
         {onTwin && (
           <>
             {spot.board.length > 0 && (
@@ -375,7 +383,11 @@ function TwinCompare({ spot, twin }: { spot: SpotPackage; twin: TwinContext }) {
   const b = freqSummary(spot, spot.solution.strategy);
   const lastA = twin.spot.board[twin.spot.board.length - 1];
   const lastB = spot.board[spot.board.length - 1];
-  const cardLabel = (c: number | undefined) => (c == null ? 'preflop' : `${STREET_LABEL[spot.street].toLowerCase()} ${cardPretty(c)}`);
+  // Same board, different assumed next card: label by the assumed card instead of the board.
+  const sameBoard = twin.spot.board.join() === spot.board.join();
+  const nextName = spot.street === 'flop' ? 'turn' : 'river';
+  const cardLabel = (c: number | undefined, s: SpotPackage) =>
+    sameBoard && s.nextCard != null ? `${nextName} ${cardPretty(s.nextCard)} assumed` : c == null ? 'preflop' : `${STREET_LABEL[spot.street].toLowerCase()} ${cardPretty(c)}`;
   return (
     <div className="panel" style={{ background: 'var(--sky-l)' }}>
       <div className="panel-title">
@@ -385,13 +397,13 @@ function TwinCompare({ spot, twin }: { spot: SpotPackage; twin: TwinContext }) {
       <div className="col" style={{ gap: 8 }}>
         <div>
           <div className="small" style={{ fontWeight: 800 }}>
-            Before · {cardLabel(lastA)} · {PROFILES[twin.spot.profile].emoji} {PROFILES[twin.spot.profile].name}
+            Before · {cardLabel(lastA, twin.spot)} · {PROFILES[twin.spot.profile].emoji} {PROFILES[twin.spot.profile].name}
           </div>
           <FreqLine items={a} />
         </div>
         <div>
           <div className="small" style={{ fontWeight: 800 }}>
-            Now · {cardLabel(lastB)} · {PROFILES[spot.profile].emoji} {PROFILES[spot.profile].name}
+            Now · {cardLabel(lastB, spot)} · {PROFILES[spot.profile].emoji} {PROFILES[spot.profile].name}
           </div>
           <FreqLine items={b} />
         </div>

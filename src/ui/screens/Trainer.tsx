@@ -11,9 +11,11 @@ import {
   type HandResult,
   type RangeScore,
 } from '../../engine/analysis';
+import { cardPretty } from '../../engine/cards';
 import { comboC1, comboC2 } from '../../engine/combos';
 import { PROFILE_IDS, PROFILES } from '../../engine/profiles';
 import { randomSeed } from '../../engine/rng';
+import { sameSpotRequest } from '../../engine/requests';
 import { classifyTexture } from '../../engine/texture';
 import type { Position } from '../../engine/seats';
 import { NODE_TYPE_INFO, STREET_LABEL, type SpotPackage, type SpotRequest, type Street } from '../../engine/types';
@@ -25,6 +27,7 @@ import { useStore, useToasts, type Outcome } from '../../state/store';
 import type { AttemptRecord, Confidence, SessionKind } from '../../state/types';
 import { engine } from '../../worker/client';
 import { BrushBar, CategoryPanel, StrengthLadder, brushMix, type Brush } from '../components/BuildTools';
+import { CardPicker } from '../components/CardPicker';
 import { CardBack } from '../components/Cards';
 import { Feedback, type TwinContext } from '../components/Feedback';
 import { ComboInspector } from '../components/Inspector';
@@ -32,7 +35,7 @@ import { MetricsPanel } from '../components/MetricsPanel';
 import { celebrate } from '../components/Overlays';
 import { RangeGrid } from '../components/RangeGrid';
 import { HandReveal } from '../components/Reveal';
-import { HistoryPanel, TablePanel, VillainPanel } from '../components/TablePanels';
+import { HistoryPanel, TablePanel, VillainPanel, nextStreetName } from '../components/TablePanels';
 import { useNav, type SessionConfig } from '../nav';
 import { sfx } from '../sound';
 import { formatMs, pct } from '../util';
@@ -89,6 +92,8 @@ export function Trainer({ session }: { session: SessionConfig }) {
   const [kind, setKind] = useState<SessionKind>('regular');
   const [attemptMs, setAttemptMs] = useState(0);
   const [pendingStreet, setPendingStreet] = useState<Street>('river');
+  const [picking, setPicking] = useState(false);
+  const [resolving, setResolving] = useState<string | null>(null);
   const [, setHistVersion] = useState(0);
 
   const undoStack = useRef<Float32Array[]>([]);
@@ -154,11 +159,11 @@ export function Trainer({ session }: { session: SessionConfig }) {
   }, [session]);
 
   const startSpot = useCallback(
-    (s: SpotPackage, k: SessionKind) => {
+    (s: SpotPackage, k: SessionKind, initial?: Float32Array, keepClock = false) => {
       setSpot(s);
       setKind(k);
       const nA = s.actions.length;
-      setStrategy(newStrategy(s));
+      setStrategy(initial ?? newStrategy(s));
       undoStack.current = [];
       redoStack.current = [];
       const facing = s.toCall > 0;
@@ -172,7 +177,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
       setOutcome(null);
       setResolved(null);
       setConfidence(undefined);
-      setStartTs(Date.now());
+      if (!keepClock) setStartTs(Date.now());
       setPhase('build');
       lastReq.current = s.request;
       const fam = useStore.getState().families[s.family];
@@ -479,6 +484,47 @@ export function Trainer({ session }: { session: SessionConfig }) {
     [spot, startSpot],
   );
 
+  /**
+   * Re-solves this spot assuming a different next card (turn on the flop, river on the turn). From the
+   * build phase your painting carries over; from feedback you go back to building with your locked
+   * range pre-painted, and the new feedback compares both cards.
+   */
+  const resolveFor = useCallback(
+    async (card: number) => {
+      if (!spot || card === spot.nextCard) return;
+      setPicking(false);
+      const prev = spot;
+      const fromFeedback = phase === 'feedback';
+      const carried = fromFeedback ? resolved : strategy;
+      const label = `${nextStreetName(prev)} ${prev.nextCard != null ? cardPretty(prev.nextCard) : '?'} → ${cardPretty(card)}`;
+      setResolving(label);
+      setPendingStreet(spot.street);
+      setPhase('loading');
+      try {
+        const s = await engine.generate(sameSpotRequest(prev, { nextCard: card }));
+        // Carry the painting over combo by combo (hands holding the new card drop out).
+        const nA = s.actions.length;
+        const init = newStrategy(s);
+        if (carried && carried.length === prev.hero.n * prev.actions.length && nA === prev.actions.length) {
+          const rowOf = new Map<number, number>();
+          for (let k = 0; k < prev.hero.n; k++) rowOf.set(prev.hero.combos[k], k);
+          for (let k = 0; k < s.hero.n; k++) {
+            const j = rowOf.get(s.hero.combos[k]);
+            if (j != null) for (let a = 0; a < nA; a++) init[k * nA + a] = carried[j * nA + a];
+          }
+        }
+        startSpot(s, fromFeedback ? 'twin' : kind, init, !fromFeedback);
+        if (fromFeedback) setTwin({ spot: prev, label: `Same spot, ${label}` });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPhase('error');
+      } finally {
+        setResolving(null);
+      }
+    },
+    [spot, phase, resolved, strategy, kind, startSpot],
+  );
+
   // ------------------------------------------------------------------ keyboard
   useEffect(() => {
     if (phase !== 'build' || !spot) return;
@@ -593,7 +639,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
               <CardBack size={52} />
               <CardBack size={52} />
             </div>
-            <h3>{LOADING_TEXT[pendingStreet]}</h3>
+            <h3>{resolving ? `Re-solving for the ${resolving}…` : LOADING_TEXT[pendingStreet]}</h3>
             <p className="muted small">
               {pendingStreet === 'preflop' ? 'Preflop answers come from a solved preflop model.' : 'The solver runs right here in your browser. Earlier streets are solved too, so the ranges are real.'}
             </p>
@@ -605,7 +651,12 @@ export function Trainer({ session }: { session: SessionConfig }) {
         <div className="trainer">
           <div className="left">
             <div className="t-table">
-              <TablePanel spot={spot} bubble={bubble} heroCards={dealtCombo != null ? [comboC1[dealtCombo], comboC2[dealtCombo]] : undefined} />
+              <TablePanel
+                spot={spot}
+                bubble={bubble}
+                heroCards={dealtCombo != null ? [comboC1[dealtCombo], comboC2[dealtCombo]] : undefined}
+                onPickNext={phase === 'build' || (phase === 'feedback' && session.kind !== 'woodpecker') ? () => setPicking(true) : undefined}
+              />
             </div>
             <div className="t-villain">
               <VillainPanel spot={spot} />
@@ -683,6 +734,7 @@ export function Trainer({ session }: { session: SessionConfig }) {
                 onNext={() => (session.kind === 'replay' ? go('home') : void loadNext())}
                 nextLabel={nextLabel}
                 onTwin={session.kind === 'woodpecker' ? undefined : (w) => void playTwin(w)}
+                onResolveNext={session.kind === 'woodpecker' ? undefined : () => setPicking(true)}
               />
               </div>
             )}
@@ -730,6 +782,19 @@ export function Trainer({ session }: { session: SessionConfig }) {
             )}
           </div>
         </div>
+      )}
+
+      {picking && spot && spot.nextCard != null && (
+        <CardPicker
+          title={`Solve for another ${nextStreetName(spot)}`}
+          blurb={`This ${spot.street} was solved assuming the ${nextStreetName(spot)} is the ${cardPretty(spot.nextCard)}. Pick any other card to re-solve the same spot for it${
+            phase === 'build' ? '; your painting is kept' : ' and rebuild your range for it (it starts from the range you locked in)'
+          }.`}
+          used={spot.board}
+          current={spot.nextCard}
+          onPick={(c) => void resolveFor(c)}
+          onClose={() => setPicking(false)}
+        />
       )}
 
       {inspectCls != null && spot && phase === 'build' && (

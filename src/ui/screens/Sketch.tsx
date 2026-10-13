@@ -10,10 +10,12 @@ import {
   type RangeScore,
   type SketchScore,
 } from '../../engine/analysis';
+import { cardPretty } from '../../engine/cards';
 import { NUM_CLASSES, classCombos, classLabel, comboC1, comboC2, comboClass } from '../../engine/combos';
 import type { Position } from '../../engine/seats';
 import { PROFILES, PROFILE_IDS, type ProfileId } from '../../engine/profiles';
 import { randomSeed } from '../../engine/rng';
+import { sameSpotRequest } from '../../engine/requests';
 import { classifyTexture } from '../../engine/texture';
 import { NODE_TYPE_INFO, STREETS, STREET_LABEL, type SpotPackage, type SpotRequest, type Street } from '../../engine/types';
 import { familyLabel } from '../../learning/families';
@@ -21,13 +23,14 @@ import { nextDrill, type DrillFilters } from '../../learning/selector';
 import { useStore, type Outcome } from '../../state/store';
 import type { AttemptRecord } from '../../state/types';
 import { engine } from '../../worker/client';
+import { CardPicker } from '../components/CardPicker';
 import { CardBack, PlayingCard } from '../components/Cards';
 import { Ring, scoreColor } from '../components/Charts';
 import { ClassGrid } from '../components/ClassGrid';
 import { Feedback } from '../components/Feedback';
 import { celebrate } from '../components/Overlays';
 import { SeatPicker, seatOrUndefined, type Seat } from '../components/SeatPicker';
-import { useFelt } from '../components/TablePanels';
+import { AssumedCard, nextStreetName, useFelt } from '../components/TablePanels';
 import { useNav } from '../nav';
 import { sfx } from '../sound';
 import { ACTION_COLOR, NONE_COLOR, actionColors, bb, formatMs, mixGradient, pct } from '../util';
@@ -105,6 +108,8 @@ export function Sketch({ session }: { session: { kind: 'sketch'; filters?: Drill
   const [hover, setHover] = useState<number | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [startTs, setStartTs] = useState(Date.now());
+  const [picking, setPicking] = useState(false);
+  const [resolving, setResolving] = useState<string | null>(null);
   const undo = useRef<{ step: number; data: Float32Array }[]>([]);
   const strokeBase = useRef<Float32Array | null>(null);
   const count = useRef(0);
@@ -250,18 +255,29 @@ export function Sketch({ session }: { session: { kind: 'sketch'; filters?: Drill
   };
 
   // ------------------------------------------------------------------ finishing
+  /** Scores every drawing and the response against a solved spot (the drawings are per class, so any spot of this line fits). */
+  const evaluate = useCallback(
+    async (s: SpotPackage) => {
+      const steps = s.line.map((st, i) => scoreSketch(drawn[i] ?? new Float32Array(NUM_CLASSES), st.range, st.board));
+      const overlap = steps.length ? steps.reduce((a, x) => a + x.overlap, 0) / steps.length : 1;
+      const n = s.actions.length;
+      const strat = newStrategy(s);
+      if (respond.length === NUM_CLASSES * n) {
+        for (let k = 0; k < s.hero.n; k++) {
+          const cls = comboClass[s.hero.combos[k]];
+          for (let a = 0; a < n; a++) strat[k * n + a] = respond[cls * n + a];
+        }
+      }
+      const resolved = resolveStrategy(s, strat);
+      const expl = s.solution.balance ? await engine.exploitability(s, resolved).catch(() => null) : null;
+      return { steps, overlap, resolved, score: scoreRange(s, resolved, expl) };
+    },
+    [drawn, respond],
+  );
+
   const finish = useCallback(async () => {
     if (!spot) return;
-    const steps = spot.line.map((s, i) => scoreSketch(drawn[i], s.range, s.board));
-    const overlap = steps.length ? steps.reduce((a, s) => a + s.overlap, 0) / steps.length : 1;
-    const strat = newStrategy(spot);
-    for (let k = 0; k < spot.hero.n; k++) {
-      const cls = comboClass[spot.hero.combos[k]];
-      for (let a = 0; a < nA; a++) strat[k * nA + a] = respond[cls * nA + a];
-    }
-    const resolved = resolveStrategy(spot, strat);
-    const expl = spot.solution.balance ? await engine.exploitability(spot, resolved).catch(() => null) : null;
-    const score = scoreRange(spot, resolved, expl);
+    const { steps, overlap, resolved, score } = await evaluate(spot);
     const dealt = sampleWeighted(spot.hero.weights);
     let act = 0;
     for (let a = 1; a < nA; a++) if (resolved[dealt * nA + a] > resolved[dealt * nA + act]) act = a;
@@ -309,7 +325,38 @@ export function Sketch({ session }: { session: { kind: 'sketch'; filters?: Drill
     const promise = engine.generate(req, true);
     promise.catch(() => undefined);
     prefetched.current = { req, promise };
-  }, [spot, drawn, respond, nA, startTs, makeRequest]);
+  }, [spot, evaluate, nA, startTs, makeRequest]);
+
+  /** Re-solves the finished spot for another next card and re-scores the same drawings and response. */
+  const resolveFor = useCallback(
+    async (card: number) => {
+      if (!spot || !result || card === spot.nextCard) return;
+      setPicking(false);
+      setResolving(`${nextStreetName(spot)} ${cardPretty(card)}`);
+      setPhase('loading');
+      try {
+        const s = await engine.generate(sameSpotRequest(spot, { nextCard: card }));
+        if (s.line.length !== spot.line.length) throw new Error('The re-solved spot took a different line.');
+        const ev = await evaluate(s);
+        // Keep the dealt hand if it is still in the range.
+        const combo = spot.hero.combos[result.hand.k];
+        let k = s.hero.combos.indexOf(combo);
+        if (k < 0) k = sampleWeighted(s.hero.weights);
+        const n = s.actions.length;
+        let act = 0;
+        for (let a = 1; a < n; a++) if (ev.resolved[k * n + a] > ev.resolved[k * n + act]) act = a;
+        setSpot(s);
+        setResult({ ...result, ...ev, hand: gradeHand(s, k, act) });
+        setPhase('reveal');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPhase('error');
+      } finally {
+        setResolving(null);
+      }
+    },
+    [spot, result, evaluate],
+  );
 
   const next = useCallback(() => {
     if (!spot) return;
@@ -370,7 +417,7 @@ export function Sketch({ session }: { session: { kind: 'sketch'; filters?: Drill
             <CardBack size={52} />
             <CardBack size={52} />
           </div>
-          <h3>Solving every street of a fresh hand…</h3>
+          <h3>{resolving ? `Re-solving for the ${resolving}…` : 'Solving every street of a fresh hand…'}</h3>
           <p className="muted small">The real ranges stay hidden until you've drawn yours.</p>
         </div>
       </div>
@@ -402,7 +449,17 @@ export function Sketch({ session }: { session: { kind: 'sketch'; filters?: Drill
     return (
       <div>
         {header}
-        <Reveal spot={spot} drawn={drawn} result={result} onNext={() => void load()} />
+        <Reveal spot={spot} drawn={drawn} result={result} onNext={() => void load()} onResolveNext={spot.nextCard != null ? () => setPicking(true) : undefined} />
+        {picking && spot.nextCard != null && (
+          <CardPicker
+            title={`Solve for another ${nextStreetName(spot)}`}
+            blurb={`This ${spot.street} was solved assuming the ${nextStreetName(spot)} is the ${cardPretty(spot.nextCard)}. Pick another card to re-solve the same hand and re-score your drawings and response against it.`}
+            used={spot.board}
+            current={spot.nextCard}
+            onPick={(c) => void resolveFor(c)}
+            onClose={() => setPicking(false)}
+          />
+        )}
       </div>
     );
 
@@ -428,6 +485,11 @@ export function Sketch({ session }: { session: { kind: 'sketch'; filters?: Drill
       <div className="sketch">
         <div className="col" style={{ gap: 14 }}>
           <SketchTable spot={spot} board={board} />
+          {spot.nextCard != null && board.length === spot.board.length && (
+            <div className="tiny muted" style={{ marginTop: -6 }}>
+              The faded card is the {nextStreetName(spot)} this spot is solved for. After the reveal you can re-solve for any other {nextStreetName(spot)}.
+            </div>
+          )}
           <div className="panel">
             <div className="panel-title">
               <h3>📜 The hand so far</h3>
@@ -582,7 +644,8 @@ function SketchTable({ spot, board }: { spot: SpotPackage; board: number[] }) {
         {board.map((c, i) => (
           <PlayingCard key={i} card={c} size={40} />
         ))}
-        {Array.from({ length: 5 - board.length }, (_, i) => (
+        {spot.nextCard != null && board.length === spot.board.length && <AssumedCard spot={spot} size={40} />}
+        {Array.from({ length: 5 - board.length - (spot.nextCard != null && board.length === spot.board.length ? 1 : 0) }, (_, i) => (
           <div key={`e${i}`} className="pcard empty-slot" style={{ ['--w' as string]: '40px' }} />
         ))}
       </div>
@@ -671,7 +734,7 @@ function topClasses(diff: Float32Array, sign: 1 | -1, n = 5): string[] {
     .map(classLabel);
 }
 
-function Reveal({ spot, drawn, result, onNext }: { spot: SpotPackage; drawn: Float32Array[]; result: Result; onNext: () => void }) {
+function Reveal({ spot, drawn, result, onNext, onResolveNext }: { spot: SpotPackage; drawn: Float32Array[]; result: Result; onNext: () => void; onResolveNext?: () => void }) {
   const [open, setOpen] = useState(0);
   const o = Math.round(result.overlap * 100);
   const headline = o >= 75 ? 'You can read minds' : o >= 60 ? 'Sharp range reading' : o >= 45 ? 'Good outline, details to tidy' : 'Ranges are tricky. Look at what was missing';
@@ -701,6 +764,16 @@ function Reveal({ spot, drawn, result, onNext }: { spot: SpotPackage; drawn: Flo
               <span className="reward">✨ +{result.outcome.xp} XP</span>
               <span className="reward">🪙 +{result.outcome.chips}</span>
             </div>
+            {spot.nextCard != null && (
+              <div className="small">
+                Solved assuming the {nextStreetName(spot)} is the <b>{cardPretty(spot.nextCard)}</b>.{' '}
+                {onResolveNext && (
+                  <button className="linkish" onClick={onResolveNext}>
+                    Re-solve for another {nextStreetName(spot)}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -730,6 +803,7 @@ function Reveal({ spot, drawn, result, onNext }: { spot: SpotPackage; drawn: Flo
         ms={result.ms}
         onNext={onNext}
         nextLabel="Next sketch"
+        onResolveNext={onResolveNext}
       />
     </div>
   );

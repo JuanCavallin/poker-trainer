@@ -13,7 +13,7 @@ import { CardBack, CardText, PlayingCard } from '../components/Cards';
 import { Ring } from '../components/Charts';
 import { celebrate } from '../components/Overlays';
 import { SeatPicker, seatOrUndefined, type Seat } from '../components/SeatPicker';
-import { useFelt } from '../components/TablePanels';
+import { AssumedCard, useFelt } from '../components/TablePanels';
 import { useNav } from '../nav';
 import { sfx } from '../sound';
 import { ACTION_COLOR, bb, pct } from '../util';
@@ -456,6 +456,7 @@ function BlitzItem({
             {spot.board.map((c, i) => (
               <PlayingCard key={i} card={c} size={42} />
             ))}
+            <AssumedCard spot={spot} size={42} />
             {spot.board.length === 0 && <div className="small" style={{ opacity: 0.85, padding: '18px 0' }}>{spot.history[0].lines.join(' → ')}</div>}
           </div>
           <div className="pot">

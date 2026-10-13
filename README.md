@@ -55,11 +55,13 @@ Villains play their style from the first action: their preflop ranges are the eq
 | Street | Model |
 | --- | --- |
 | Preflop | Each pair of seats is a heads-up game over the 169 starting hands (open → fold / call / 3-bet → fold / call / 4-bet → fold / call / jam), with exact card removal between hand classes. When a call ends the betting, the postflop is valued by **equity realisation**: all-in equity scaled by position, suitedness, connectedness and stack-to-pot ratio, with a squeeze penalty for cold calls with seats still to act. Opening ranges are solved against **every seat still to act** (iterated to a fixed point). Results: UTG opens 18.6%, HJ 23.1%, CO 29.0%, BTN 40.5%, SB 41.9%; BB vs a BTN open folds 38%, calls 47% and 3-bets 15%. |
-| Flop | The flop's full betting (33% and 75% bets, a raise) plus turn play (66% bets) on 5–7 sampled turn cards, spread over ranks and suits; the river is a showdown over sampled cards with a small edge for the player in position. ~1–2 s. |
-| Turn | The turn's full betting plus river play (75% bets) on every river card, or 12–24 sampled river cards when ranges are wide. ~1–2 s. |
+| Flop | Solved for **one turn card**, random by default: the flop's betting (33% and 75% bets, a raise), then the same betting on that turn; the river is a showdown over sampled cards with a small edge for the player in position. Click the faded turn card (or **Re-solve for another turn** after feedback) to pick any other turn and re-solve the same spot. ~1–1.5 s. |
+| Turn | Solved for **one river card**, random by default, with full river betting (33%, 75% and all-in, a raise). Pick another river the same way. ~0.3–1 s. |
 | River | Exact for its tree (33%, 75% and all-in bets, one raise). ~0.5 s. |
 
 Streets **before** the decision are solved too: each earlier street is solved with its own betting and a showdown over sampled runouts, then one line is sampled from those strategies (the villain's bent by their tendency). The ranges you see are what an equilibrium player would really bring to the spot, not a heuristic.
+
+Because the solve assumes the next card, nobody can hold it: hands containing that card are left out of that solve (about 4% of combos) and come back if you pick another card. Re-solving keeps the seats, board and earlier line identical, carries your painting over combo by combo, and from feedback sends you back to build again, with a side-by-side comparison of the two cards afterwards. Range Sketch can re-solve in its reveal too, re-scoring your drawings and response against the new card.
 
 Card-dealing weights are validated by a test: a turn game where nobody bets the turn has the same value as the 48 river games solved separately.
 
@@ -107,7 +109,7 @@ Spots are reproducible from their request (seed, street, seats, filters, optiona
 
 ## Limitations
 
-- **Abstractions before the river.** Flop and turn solves use sampled turn/river cards and one bet size on later streets, and flop solves end in a showdown at the river with a small positional edge. They're close to full solves, not identical to them. The decision street always gets two sizes and a raise.
+- **One next card.** Flop and turn spots are solved as if the next card were known in advance, so their strategies answer "what if the turn is X?" rather than averaging over every turn. Comparing a few cards with the picker shows how much the answer depends on the runout. Flop solves also end in a showdown at the river with a small positional edge.
 - **Preflop is a model.** Heads-up games with equity realisation, not a full multi-way 6-max solve. Ranges land close to standard 100bb charts; limping and multi-way pots aren't modelled, and the small blind plays raise-or-fold.
 - Betting trees are deliberately small (two sizes, all-in when short, one raise), which keeps solves to a second or two in the browser.
 - "Value vs bluff" in the readout is classified against villain's *continuing* range for each size; before the river this means hands ahead of or behind the hands that continue, by all-in equity.

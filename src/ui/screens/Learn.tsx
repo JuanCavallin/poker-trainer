@@ -208,7 +208,8 @@ export function Learn() {
           Everything is solved with Discounted CFR, the algorithm family behind modern poker AIs, in a Web Worker in your browser. <b>Preflop</b>: each pair of seats is a heads-up
           game over the 169 starting hands (open, 3-bet, 4-bet, jam) with exact card removal; after a call, the postflop is valued by equity realisation (position, suitedness and
           connectedness change how much equity a hand keeps). Opening ranges are solved against every seat still to act. <b>Flop</b>: the flop's betting (33% and 75% bets, a raise)
-          plus turn play on a sample of turn cards, with the river as a showdown. <b>Turn</b>: the turn's betting plus river play on every (or a sample of) river card.{' '}
+          plus turn play on one turn card, with the river as a showdown. <b>Turn</b>: the turn's betting plus river play on one river card. The next card is random, and you can
+          click it (the faded card on the table) to pick any other and re-solve the same spot for it.{' '}
           <b>River</b>: solved exactly for its tree. The streets before your decision are solved too, and one line is sampled from those strategies, so the ranges you see are
           what a solver-playing opponent would really have.
         </p>
