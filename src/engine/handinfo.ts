@@ -1,7 +1,8 @@
 import { RANK_PLURALS, RANK_WORDS, RANKS, rankOf, suitOf } from './cards';
+import { classKind, classRanks, comboClass, comboId } from './combos';
 import { CAT, STRAIGHT_HIGH, evaluate, evaluateWith } from './evaluator';
 
-/** Hand categories for river spots, roughly strongest to weakest. */
+/** Hand categories, roughly strongest to weakest: postflop made hands, draws, air, then preflop groups. */
 export const HAND_CATS = [
   { key: 'monster', label: 'Quads / straight flush', short: 'Quads+' },
   { key: 'fullhouse', label: 'Full house', short: 'Full house' },
@@ -14,10 +15,26 @@ export const HAND_CATS = [
   { key: 'toppair', label: 'Top pair', short: 'Top pair' },
   { key: 'secondpair', label: 'Second pair', short: '2nd pair' },
   { key: 'weakpair', label: 'Weak pair', short: 'Weak pair' },
+  { key: 'combodraw', label: 'Combo draw', short: 'Combo draw' },
+  { key: 'flushdraw', label: 'Flush draw', short: 'Flush draw' },
+  { key: 'oesd', label: 'Open-ended straight draw', short: 'Open-ender' },
+  { key: 'gutshot', label: 'Gutshot', short: 'Gutshot' },
+  { key: 'overcards', label: 'Two overcards', short: 'Overcards' },
   { key: 'acehigh', label: 'Ace high', short: 'Ace high' },
   { key: 'misseddraw', label: 'Missed draw', short: 'Missed draw' },
   { key: 'nothing', label: 'No pair', short: 'No pair' },
   { key: 'board', label: 'Plays the board', short: 'Board' },
+  { key: 'p-bigpair', label: 'Big pairs (TT+)', short: 'Big pairs' },
+  { key: 'p-midpair', label: 'Middle pairs (66–99)', short: 'Mid pairs' },
+  { key: 'p-smallpair', label: 'Small pairs (22–55)', short: 'Small pairs' },
+  { key: 'p-suitedace', label: 'Suited aces', short: 'Axs' },
+  { key: 'p-suitedbroadway', label: 'Suited broadways', short: 'Suited Bwy' },
+  { key: 'p-suitedconnector', label: 'Suited connectors & gappers', short: 'Suited conn.' },
+  { key: 'p-suitedother', label: 'Other suited', short: 'Other suited' },
+  { key: 'p-offbroadway', label: 'Offsuit broadways', short: 'Offsuit Bwy' },
+  { key: 'p-offace', label: 'Offsuit aces', short: 'Axo' },
+  { key: 'p-offconnector', label: 'Offsuit connectors', short: 'Offsuit conn.' },
+  { key: 'p-offother', label: 'Other offsuit', short: 'Offsuit junk' },
 ] as const;
 
 export const HC = {
@@ -32,10 +49,17 @@ export const HC = {
   TOPPAIR: 8,
   SECONDPAIR: 9,
   WEAKPAIR: 10,
-  ACEHIGH: 11,
-  MISSEDDRAW: 12,
-  NOTHING: 13,
-  BOARD: 14,
+  COMBODRAW: 11,
+  FLUSHDRAW: 12,
+  OESD: 13,
+  GUTSHOT: 14,
+  OVERCARDS: 15,
+  ACEHIGH: 16,
+  MISSEDDRAW: 17,
+  NOTHING: 18,
+  BOARD: 19,
+  /** First preflop group; preflop categories run from here to the end of HAND_CATS. */
+  PRE_FIRST: 20,
 } as const;
 
 export const HF = {
@@ -44,6 +68,9 @@ export const HF = {
   MISSED_SD: 4,
   NUT_FLUSH_BLOCKER: 8,
   FLUSH_BLOCKER: 16,
+  /** Live draws on the flop or turn. */
+  FLUSH_DRAW: 32,
+  STRAIGHT_DRAW: 64,
 } as const;
 
 export interface HandDesc {
@@ -99,8 +126,78 @@ function missedDraws(board: readonly number[], c1: number, c2: number): number {
   return flags;
 }
 
-/** Describes a two-card holding on a 5-card (river) board. */
+/** Live draws on a flop or turn: flush draw and straight-draw outs (by rank). */
+function liveDraws(board: readonly number[], c1: number, c2: number): { fd: boolean; outs: number } {
+  let fd = false;
+  for (let s = 0; s < 4; s++) {
+    const hole = (suitOf(c1) === s ? 1 : 0) + (suitOf(c2) === s ? 1 : 0);
+    if (!hole) continue;
+    let cnt = hole;
+    for (const c of board) if (suitOf(c) === s) cnt++;
+    if (cnt === 4) fd = true;
+  }
+  const bm = boardRankMask(board);
+  const hm = bm | (1 << rankOf(c1)) | (1 << rankOf(c2));
+  let outs = 0;
+  if (STRAIGHT_HIGH[hm] < 0) {
+    for (let r = 0; r < 13; r++) if (STRAIGHT_HIGH[hm | (1 << r)] >= 0 && STRAIGHT_HIGH[bm | (1 << r)] < 0) outs++;
+  }
+  return { fd, outs };
+}
+
+/** Preflop group (HAND_CATS index) of a hand class. */
+export function preflopCategory(cls: number): number {
+  const [hi, lo] = classRanks(cls);
+  const kind = classKind(cls);
+  if (kind === 'pair') return hi >= 8 ? HC.PRE_FIRST : hi >= 4 ? HC.PRE_FIRST + 1 : HC.PRE_FIRST + 2;
+  const gap = hi === 12 && lo <= 3 ? lo : hi - lo - 1;
+  if (kind === 'suited') {
+    if (hi >= 8 && lo >= 8) return HC.PRE_FIRST + 4;
+    if (hi === 12) return HC.PRE_FIRST + 3;
+    if (gap <= 1) return HC.PRE_FIRST + 5;
+    return HC.PRE_FIRST + 6;
+  }
+  if (hi >= 8 && lo >= 8) return HC.PRE_FIRST + 7;
+  if (hi === 12) return HC.PRE_FIRST + 8;
+  if (gap === 0 && lo >= 3) return HC.PRE_FIRST + 9;
+  return HC.PRE_FIRST + 10;
+}
+
+function describePreflop(a: number, b: number): HandDesc {
+  const cls = comboClass[comboId(a, b)];
+  const [hi, lo] = classRanks(cls);
+  const kind = classKind(cls);
+  const label =
+    kind === 'pair'
+      ? `Pocket ${RANK_PLURALS[hi].toLowerCase()}`
+      : `${RANK_WORDS[hi]}-${RANK_WORDS[lo].toLowerCase()} ${kind === 'suited' ? 'suited' : 'offsuit'}`;
+  return { cat: preflopCategory(cls), label, flags: 0 };
+}
+
+/** Describes a two-card holding: preflop (no board), on the flop or turn (with live draws), or on the river. */
 export function describeHand(board: readonly number[], a: number, b: number): HandDesc {
+  if (board.length === 0) return describePreflop(a, b);
+  const d = describeMade(board, a, b);
+  if (board.length >= 5) return d;
+  const { fd, outs } = liveDraws(board, a, b);
+  if (!fd && outs === 0) {
+    if (d.cat === HC.NOTHING || d.cat === HC.ACEHIGH) {
+      const top = Math.max(...board.map(rankOf));
+      if (rankOf(a) > top && rankOf(b) > top) return { cat: HC.OVERCARDS, label: `Two overcards (${RANKS[Math.max(rankOf(a), rankOf(b))]}${RANKS[Math.min(rankOf(a), rankOf(b))]})`, flags: d.flags };
+    }
+    return d;
+  }
+  const flags = d.flags | (fd ? HF.FLUSH_DRAW : 0) | (outs > 0 ? HF.STRAIGHT_DRAW : 0);
+  const drawName = fd && outs > 0 ? 'combo draw' : fd ? 'flush draw' : outs >= 2 ? 'open-ended straight draw' : 'gutshot';
+  if (d.cat === HC.NOTHING || d.cat === HC.ACEHIGH || d.cat === HC.BOARD) {
+    const cat = fd && outs > 0 ? HC.COMBODRAW : fd ? HC.FLUSHDRAW : outs >= 2 ? HC.OESD : HC.GUTSHOT;
+    return { cat, label: drawName[0].toUpperCase() + drawName.slice(1), flags };
+  }
+  if (d.cat <= HC.STRAIGHT) return { ...d, flags };
+  return { cat: d.cat, label: `${d.label} + ${drawName}`, flags };
+}
+
+function describeMade(board: readonly number[], a: number, b: number): HandDesc {
   const c1 = rankOf(a) >= rankOf(b) ? a : b;
   const c2 = c1 === a ? b : a;
   const r1 = rankOf(c1);
