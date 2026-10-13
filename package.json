@@ -3,13 +3,15 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "A cozy heads-up poker range trainer: read the villain's range, build yours, then play your hand.",
+  "description": "A cozy heads-up poker range trainer for every street: read the villain's range, build yours, then play your hand.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gen:equity": "rolldown scripts/gen-equity.ts --file node_modules/.cache/gen-equity.mjs --format esm --platform node && node node_modules/.cache/gen-equity.mjs",
+    "gen:preflop": "rolldown scripts/gen-preflop.ts --file node_modules/.cache/gen-preflop.mjs --format esm --platform node && node node_modules/.cache/gen-preflop.mjs"
   },
   "dependencies": {
     "@fontsource/fredoka": "^5.3.0",
