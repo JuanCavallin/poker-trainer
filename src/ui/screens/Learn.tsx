@@ -79,8 +79,26 @@ const RESEARCH: { icon: string; title: string; what: string; cite: string }[] = 
   {
     icon: '🐦',
     title: 'The Woodpecker, adapted',
-    what: 'Repeating a fixed set faster each cycle builds speed, but the benefit of drilling identical items fades over weeks, and memorising a picture is not the same as learning a pattern. Mirror mode keeps the strategy and changes the suits; pair it with rest days between cycles.',
+    what: 'Repeating a fixed set faster each cycle builds speed, but the benefit of drilling identical items fades over weeks, and memorising a picture is not the same as learning a pattern. Postflop sets use mirror mode (same strategy, new suits); preflop sets repeat exactly, because there the picture is the pattern. Rest between cycles either way. There is no controlled study of the Woodpecker Method itself; its ingredients are what the evidence supports.',
     cite: 'Smith & Tikkanen (2018) The Woodpecker Method; Rohrer et al. (2005) overlearning',
+  },
+  {
+    icon: '🌰',
+    title: 'Why drills and speed suit preflop best',
+    what: 'Preflop is a closed set: 169 hands, six seats, a few situations, and the same situation always has the same answer. That "consistent mapping" is exactly when practice turns slow reasoning into instant recall, so Woodpecker cycles and Blitz fit preflop well. Postflop answers shift with the board, ranges and sizing, so postflop drills vary the surface instead (mirror suits, twins, interleaving).',
+    cite: 'Schneider & Shiffrin (1977); Logan (1988) Psychological Review; Karpicke & Roediger (2008) Science',
+  },
+  {
+    icon: '⏱️',
+    title: 'Understand first, then speed up',
+    what: 'Time pressure does not help brand-new material: in one study, timed practice sped people up only when it was spread over days, and untimed practice transferred better to related facts. So learn a chart slowly (Training, Sketch), then use Blitz, and spread runs out over days instead of cramming.',
+    cite: 'Jazbutis, Wiseheart, Radvansky & McNeil (2023) Journal of Numerical Cognition; Kornell (2009) Applied Cognitive Psychology',
+  },
+  {
+    icon: '✏️',
+    title: 'Draw the ranges yourself',
+    what: 'Range Sketch hides every range: you draw the villain\'s range after each action and your own in reply, and only see the real ranges at the end. Producing an answer before seeing it (even a wrong one) makes the correction stick, and holding feedback to the end keeps you reasoning from the betting, not from the last result.',
+    cite: 'Slamecka & Graf (1978); Kornell, Hays & Bjork (2009); Richland, Kornell & Kao (2009)',
   },
   {
     icon: '🎁',
@@ -187,9 +205,16 @@ export function Learn() {
       <div className="panel learn-card">
         <h3>🤖 Where the answers come from</h3>
         <p>
-          Each spot's flop and turn are simulated with simple, believable heuristics to produce the two river ranges. The river is then solved exactly for that game tree
-          (check, 33%, 75% and all-in bets, one raise) with Discounted CFR, the algorithm family behind modern poker AIs, inside a Web Worker in your browser. Against the Wise Owl you
-          are compared with the equilibrium; against the other villains, with the best response to their tendencies.
+          Everything is solved with Discounted CFR, the algorithm family behind modern poker AIs, in a Web Worker in your browser. <b>Preflop</b>: each pair of seats is a heads-up
+          game over the 169 starting hands (open, 3-bet, 4-bet, jam) with exact card removal; after a call, the postflop is valued by equity realisation (position, suitedness and
+          connectedness change how much equity a hand keeps). Opening ranges are solved against every seat still to act. <b>Flop</b>: the flop's betting (33% and 75% bets, a raise)
+          plus turn play on a sample of turn cards, with the river as a showdown. <b>Turn</b>: the turn's betting plus river play on every (or a sample of) river card.{' '}
+          <b>River</b>: solved exactly for its tree. The streets before your decision are solved too, and one line is sampled from those strategies, so the ranges you see are
+          what a solver-playing opponent would really have.
+        </p>
+        <p>
+          Against the Wise Owl you are compared with the equilibrium. The other villains play the equilibrium bent by their tendencies, preflop as well (the Sloth calls too wide,
+          the Bunny opens tight, the Fox 3-bets light, the Raccoon raises everything), and you are compared with the best response to them.
         </p>
         <div className="tiny muted">Zinkevich et al. (2007) CFR; Brown & Sandholm (2019) Discounted CFR; Chen & Ankenman (2006) The Mathematics of Poker</div>
         <button className="btn" style={{ marginTop: 10 }} onClick={() => go('train', { kind: 'regular' })}>
