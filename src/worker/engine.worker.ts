@@ -12,7 +12,8 @@ const cache = new Map<string, SpotContext>();
 const remember = (id: string, ctx: SpotContext) => {
   cache.delete(id);
   cache.set(id, ctx);
-  while (cache.size > 8) cache.delete(cache.keys().next().value as string);
+  // Turn and flop solves hold several MB each; keep only the most recent few.
+  while (cache.size > 4) cache.delete(cache.keys().next().value as string);
 };
 
 const ctxFor = (spotId: string, req: SpotRequest): SpotContext => {

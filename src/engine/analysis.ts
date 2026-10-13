@@ -1,4 +1,4 @@
-import { NUM_CLASSES, classCombos, comboClass } from './combos';
+import { NUM_CLASSES, classCombos, comboC1, comboC2, comboClass } from './combos';
 import { HAND_CATS, HC, HF } from './handinfo';
 import type { SpotPackage } from './types';
 
@@ -499,6 +499,11 @@ export const FINDS: Record<FindId, { title: string; emoji: string; desc: string 
 
 export function detectFinds(spot: SpotPackage, hand: HandResult): FindId[] {
   const out: FindId[] = [];
+  // Highlights describe river plays; earlier streets (and preflop) only count exploits.
+  if (spot.street !== 'river') {
+    if (spot.solution.mode === 'exploit' && hand.lossPct <= 0.5 && spot.solution.gtoStrategy[hand.k * spot.actions.length + hand.action] <= 0.25) out.push('exploit');
+    return out;
+  }
   const nA = spot.actions.length;
   const { k, action } = hand;
   const opt = spot.actions[action];
@@ -525,4 +530,45 @@ export function detectFinds(spot: SpotPackage, hand: HandResult): FindId[] {
   if (!facing && opt.key === 'check' && spot.nodeType === 'oop-first' && H.equity[k] >= 0.85 && ref(action) >= 0.5) out.push('trap');
   if (spot.solution.mode === 'exploit' && hand.lossPct <= 0.5 && spot.solution.gtoStrategy[k * nA + action] <= 0.25) out.push('exploit');
   return out;
+}
+
+// ------------------------------------------------------------------ range sketches
+
+export interface SketchScore {
+  /** Weighted overlap of drawn and real ranges: shared combos ÷ combos in either (0..1). */
+  overlap: number;
+  drawnCombos: number;
+  actualCombos: number;
+  /** Per hand class: drawn minus real combos (positive = drew too much). */
+  classDiff: Float32Array;
+  /** Real range as class frequencies (average over combos the board doesn't block). */
+  actualClass: Float32Array;
+}
+
+/** Compares a range drawn per hand class (0..1) with the real range (combo weights), ignoring board-blocked combos. */
+export function scoreSketch(drawn: ArrayLike<number>, actual: ArrayLike<number>, board: readonly number[]): SketchScore {
+  const dead = new Set(board);
+  let shared = 0;
+  let either = 0;
+  let dSum = 0;
+  let aSum = 0;
+  const classDiff = new Float32Array(NUM_CLASSES);
+  const actualClass = new Float32Array(NUM_CLASSES);
+  for (let cls = 0; cls < NUM_CLASSES; cls++) {
+    const d = Math.max(0, Math.min(1, drawn[cls]));
+    let live = 0;
+    for (const id of classCombos[cls]) {
+      if (dead.has(comboC1[id]) || dead.has(comboC2[id])) continue;
+      const a = Math.max(0, Math.min(1, actual[id]));
+      shared += Math.min(d, a);
+      either += Math.max(d, a);
+      dSum += d;
+      aSum += a;
+      classDiff[cls] += d - a;
+      actualClass[cls] += a;
+      live++;
+    }
+    actualClass[cls] = live ? actualClass[cls] / live : 0;
+  }
+  return { overlap: either > 0 ? shared / either : 1, drawnCombos: dSum, actualCombos: aSum, classDiff, actualClass };
 }

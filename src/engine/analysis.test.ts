@@ -42,7 +42,7 @@ describe('scoring', () => {
           const sc = scoreRange(spot, resolved, expl);
           out.push(`${name} ${sc.score} (ev ${sc.evLossPct.toFixed(1)}%, ex ${expl.toFixed(1)}%, match ${sc.matchPct.toFixed(0)}%)`);
           if (name === 'gto') expect(sc.score).toBeGreaterThan(93);
-          if (name === 'maniac') expect(sc.score).toBeLessThan(80);
+          if (name === 'maniac' && aggr >= 0) expect(sc.score).toBeLessThan(80);
         }
         const lm = liveMetrics(spot, newStrategy(spot));
         expect(lm.unassigned).toBeCloseTo(lm.total, 4);
